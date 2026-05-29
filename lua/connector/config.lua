@@ -27,7 +27,7 @@ function config.default()
     },
     result = {
       page_size = 100,
-      focus_result = true,
+      focus_result = false,
       mappings = {
         { key = "L", mode = "n", action = "page_next" },
         { key = "H", mode = "n", action = "page_prev" },

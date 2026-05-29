@@ -56,7 +56,7 @@ function CallLogUI:build_call_line(call)
 
   local preview, candy = self:state_preview(call.state)
   buffer_line.append(builder, preview, candy.icon_highlight)
-  buffer_line.append(builder, " ┃ ", "NonText")
+  buffer_line.append(builder, " ┃ ", "Delimiter")
   buffer_line.append(builder, buffer_line.truncate_display(query, 40), candy.text_highlight ~= "" and candy.text_highlight or nil)
   return builder
 end
@@ -69,7 +69,7 @@ function CallLogUI:refresh()
 
   if #calls == 0 then
     local builder = buffer_line.new_builder()
-    buffer_line.append(builder, "Call log will be displayed here!", "NonText")
+    buffer_line.append(builder, "Call log will be displayed here!", "MoreMsg")
     table.insert(lines, builder)
     buffer_line.render(self.bufnr, self.ns, lines)
     return

@@ -45,9 +45,12 @@ function connector.execute(query)
   if not connection then
     error("no active connection selected")
   end
-  local call = api.core.connection_execute(connection.id, query)
-  api.ui.result_set_call(call)
-  connector.open()
+  api.core.connection_execute(connection.id, query, function(call)
+    if call then
+      api.ui.result_set_call(call)
+      connector.open()
+    end
+  end)
 end
 
 function connector.store(format_name, output, opts)

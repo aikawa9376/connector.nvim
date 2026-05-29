@@ -50,8 +50,8 @@ function core.set_current_connection(id)
   state.handler():set_current_connection(id)
 end
 
-function core.connection_execute(id, query)
-  return state.handler():connection_execute(id, query)
+function core.connection_execute(id, query, done)
+  return state.handler():connection_execute(id, query, done)
 end
 
 function core.connection_get_structure(id)

@@ -4,22 +4,20 @@ function M.drawer_defaults()
   return {
     history = { icon = "", icon_highlight = "Constant", text_highlight = "" },
     note = { icon = "", icon_highlight = "Character", text_highlight = "" },
-    connection = { icon = "󱘖", icon_highlight = "NonText", text_highlight = "" },
-    connection_active = { icon = "󰪩", icon_highlight = "SpecialChar", text_highlight = "SpecialChar" },
+    connection = { icon = "󱘖", icon_highlight = "SpecialChar", text_highlight = "" },
+    connection_active = { icon = "󰪩", icon_highlight = "Title", text_highlight = "Title" },
     database_switch = { icon = "", icon_highlight = "Character", text_highlight = "" },
-    schema = { icon = "", icon_highlight = "Removed", text_highlight = "" },
+    schema = { icon = "", icon_highlight = "Directory", text_highlight = "" },
     table = { icon = "", icon_highlight = "Conditional", text_highlight = "" },
     view = { icon = "", icon_highlight = "Debug", text_highlight = "" },
     column = { icon = "󰠵", icon_highlight = "WarningMsg", text_highlight = "" },
     add = { icon = "", icon_highlight = "String", text_highlight = "String" },
     edit = { icon = "󰏫", icon_highlight = "Directory", text_highlight = "Directory" },
-    remove = { icon = "󰆴", icon_highlight = "SpellBad", text_highlight = "SpellBad" },
+    remove = { icon = "󰆴", icon_highlight = "Error", text_highlight = "Error" },
     help = { icon = "󰋖", icon_highlight = "Title", text_highlight = "Title" },
     source = { icon = "󰃖", icon_highlight = "MoreMsg", text_highlight = "MoreMsg" },
     none = { icon = " ", icon_highlight = "", text_highlight = "" },
-    none_dir = { icon = "", icon_highlight = "NonText", text_highlight = "" },
-    node_expanded = { icon = "", icon_highlight = "NonText", text_highlight = "" },
-    node_closed = { icon = "", icon_highlight = "NonText", text_highlight = "" },
+    none_dir = { icon = "", icon_highlight = "Directory", text_highlight = "" },
   }
 end
 
@@ -29,7 +27,7 @@ function M.call_log_defaults()
     failed = { icon = "󰑐", icon_highlight = "Error", text_highlight = "" },
     archived = { icon = "", icon_highlight = "Title", text_highlight = "" },
     canceled = { icon = "", icon_highlight = "Error", text_highlight = "" },
-    unknown = { icon = "", icon_highlight = "NonText", text_highlight = "" },
+    unknown = { icon = "", icon_highlight = "Identifier", text_highlight = "" },
   }
 end
 

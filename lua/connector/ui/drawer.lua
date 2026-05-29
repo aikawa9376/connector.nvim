@@ -21,7 +21,6 @@ function DrawerUI:new(handler, editor, result, config)
     expanded = {
       ["root:connections"] = true,
       ["root:scratchpads"] = true,
-      ["root:help"] = true,
     },
     candies = config.disable_candies and {} or vim.tbl_deep_extend("force", candies_module.drawer_defaults(), config.candies or {}),
   }
@@ -38,6 +37,10 @@ function DrawerUI:new(handler, editor, result, config)
   handler:register_event_listener("current_connection_changed", function()
     o:refresh()
   end)
+  handler:register_event_listener("query_context_changed", function(payload)
+    o:expand_query_context(payload)
+    o:refresh()
+  end)
   editor:register_event_listener("notes_changed", function()
     o:refresh()
   end)
@@ -46,6 +49,19 @@ function DrawerUI:new(handler, editor, result, config)
   end)
 
   return o
+end
+
+function DrawerUI:expand_query_context(payload)
+  self.expanded["root:connections"] = true
+  if payload.source_id then
+    self.expanded["source:" .. payload.source_id] = true
+  end
+  if payload.connection_id then
+    self.expanded["connection:" .. payload.connection_id] = true
+  end
+  if payload.connection_id and payload.database and payload.database ~= "" then
+    self.expanded[("database:%s:%s"):format(payload.connection_id, payload.database)] = true
+  end
 end
 
 function DrawerUI:show(winid)
@@ -100,23 +116,14 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
   buffer_line.append(builder, string.rep("  ", depth))
 
   if self.config.disable_candies then
-    local prefix = opts.expandable and ((self:is_expanded(node.key) and "▾ " or "▸ ")) or ""
     local active = opts.active and "● " or ""
-    buffer_line.append(builder, prefix .. active .. label)
+    buffer_line.append(builder, active .. label)
   else
-    if opts.expandable then
-      local chevron_key = self:is_expanded(node.key) and "node_expanded" or "node_closed"
-      local chevron = candies_module.get(self.candies, chevron_key)
-      buffer_line.append(builder, (chevron.icon or "▸") .. " ", chevron.icon_highlight)
-    else
-      buffer_line.append(builder, "  ")
-    end
-
     local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active)
     if candy.icon and candy.icon ~= "" then
-      buffer_line.append(builder, " " .. candy.icon .. " ", candy.icon_highlight)
+      buffer_line.append(builder, candy.icon .. " ", candy.icon_highlight)
     elseif candy.icon == " " then
-      buffer_line.append(builder, "   ")
+      buffer_line.append(builder, " ")
     end
 
     local text_hl = candy.text_highlight
@@ -162,6 +169,53 @@ function DrawerUI:connection_prompt(initial, done)
   end
 
   step(1)
+end
+
+function DrawerUI:render_structure_items(lines, depth, conn, items)
+  table.sort(items, function(left, right)
+    return left.name < right.name
+  end)
+  for _, item in ipairs(items) do
+    local schema = item.schema
+    local table_key = ("table:%s:%s:%s"):format(conn.id, schema or "", item.name)
+    self:add_line(lines, depth, item.name, {
+      kind = "table",
+      key = table_key,
+      connection_id = conn.id,
+      schema = schema ~= "" and schema or nil,
+      table = item.name,
+      materialization = item.materialization,
+    })
+  end
+end
+
+function DrawerUI:table_action(node)
+  self.handler:set_current_connection(node.connection_id)
+  local helpers = self.handler:connection_get_helpers(node.connection_id, {
+    table = node.table,
+    schema = node.schema,
+    materialization = node.materialization,
+  })
+  local items = util.table_keys_sorted(helpers)
+  vim.ui.select(items, { prompt = "Select a query" }, function(choice)
+    if not choice then
+      return
+    end
+    local query = helpers[choice]
+    if not query or query == "" then
+      return
+    end
+    local ok, err = pcall(function()
+      self.handler:connection_execute(node.connection_id, query, function(call)
+        if call then
+          self.result:set_call(call)
+        end
+      end)
+    end)
+    if not ok then
+      util.notify(err, vim.log.levels.ERROR)
+    end
+  end)
 end
 
 function DrawerUI:insert_query(text)
@@ -213,82 +267,30 @@ function DrawerUI:refresh()
           }, { expandable = true, active = is_active })
           if self:is_expanded(conn_key) then
             local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
-            if ok_dbs and (current_db ~= "" or #(databases or {}) > 0) then
-              local db_root_key = "dbroot:" .. conn.id
-              self:add_line(lines, 3, "Databases", {
-                kind = "dbroot",
-                key = db_root_key,
-              }, { expandable = true })
-              if self:is_expanded(db_root_key) then
-                for _, database in ipairs(databases or {}) do
-                  self:add_line(lines, 4, database, {
-                    kind = "database",
-                    key = ("database:%s:%s"):format(conn.id, database),
-                    connection_id = conn.id,
-                    database = database,
-                  }, { active = database == current_db })
-                end
-              end
-            end
+            local has_databases = ok_dbs and #(databases or {}) > 0
 
-            local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
-            if ok_structure then
-              local grouped = {}
-              for _, item in ipairs(structure) do
-                local schema = item.schema or ""
-                grouped[schema] = grouped[schema] or {}
-                table.insert(grouped[schema], item)
-              end
-              for _, schema in ipairs(util.table_keys_sorted(grouped)) do
-                local schema_key = ("schema:%s:%s"):format(conn.id, schema)
-                self:add_line(lines, 3, schema ~= "" and schema or "(default)", {
-                  kind = "schema",
-                  key = schema_key,
-                }, { expandable = true })
-                if self:is_expanded(schema_key) then
-                  table.sort(grouped[schema], function(left, right)
-                    return left.name < right.name
-                  end)
-                  for _, item in ipairs(grouped[schema]) do
-                    local table_key = ("table:%s:%s:%s"):format(conn.id, schema, item.name)
-                    self:add_line(lines, 4, item.name .. " [" .. item.materialization .. "]", {
-                      kind = "table",
-                      key = table_key,
-                      connection_id = conn.id,
-                      schema = schema ~= "" and schema or nil,
-                      table = item.name,
-                      materialization = item.materialization,
-                    }, { expandable = true })
-                    if self:is_expanded(table_key) then
-                      local helpers = self.handler:connection_get_helpers(conn.id, {
-                        table = item.name,
-                        schema = schema ~= "" and schema or nil,
-                        materialization = item.materialization,
-                      })
-                      for _, helper_name in ipairs(util.table_keys_sorted(helpers)) do
-                        self:add_line(lines, 5, helper_name, {
-                          kind = "helper",
-                          key = ("helper:%s:%s:%s"):format(conn.id, item.name, helper_name),
-                          query = helpers[helper_name],
-                        })
-                      end
-
-                      local ok_columns, cols = pcall(self.handler.connection_get_columns, self.handler, conn.id, {
-                        table = item.name,
-                        schema = schema ~= "" and schema or nil,
-                        materialization = item.materialization,
-                      })
-                      if ok_columns then
-                        for _, column in ipairs(cols) do
-                          self:add_line(lines, 5, ("%s [%s]"):format(column.name, column.data_type), {
-                            kind = "column",
-                            key = ("column:%s:%s"):format(item.name, column.name),
-                          })
-                        end
-                      end
-                    end
+            if has_databases then
+              for _, database in ipairs(databases or {}) do
+                local db_key = ("database:%s:%s"):format(conn.id, database)
+                self:add_line(lines, 3, database, {
+                  kind = "database",
+                  key = db_key,
+                  connection_id = conn.id,
+                  database = database,
+                }, { expandable = true, active = database == current_db })
+                if self:is_expanded(db_key) then
+                  local ok_structure, items = pcall(self.handler.connection_get_structure, self.handler, conn.id, database)
+                  if ok_structure then
+                    self:render_structure_items(lines, 4, conn, items)
+                  else
+                    util.notify(("Failed to load tables for %s: %s"):format(database, items), vim.log.levels.ERROR)
                   end
                 end
+              end
+            else
+              local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
+              if ok_structure then
+                self:render_structure_items(lines, 3, conn, structure)
               end
             end
           end
@@ -336,7 +338,7 @@ function DrawerUI:refresh()
       key = "root:help",
     }, { expandable = true })
     if self:is_expanded("root:help") then
-      self:add_line(lines, 1, "<CR>: open/select/insert", { kind = "help", key = "help:1" })
+      self:add_line(lines, 1, "<CR>: open/select", { kind = "help", key = "help:1" })
       self:add_line(lines, 1, "o: toggle node", { kind = "help", key = "help:2" })
       self:add_line(lines, 1, "cw: rename/edit", { kind = "help", key = "help:3" })
       self:add_line(lines, 1, "dd: delete", { kind = "help", key = "help:4" })
@@ -367,19 +369,18 @@ function DrawerUI:do_action(action)
   end
 
   if action == "action_1" then
-    if node.kind == "root" or node.kind == "source" or node.kind == "connection" or node.kind == "schema" or node.kind == "table" or node.kind == "dbroot" then
-      if node.kind == "connection" then
-        self.handler:set_current_connection(node.connection_id)
-      elseif node.kind == "table" then
-        local conn = self.handler:connection_get_params(node.connection_id)
-        self:insert_query(("SELECT * FROM %s LIMIT 200;"):format(util.qualify_table(conn.type, node.schema, node.table)))
-      end
+    if node.kind == "table" then
+      self:table_action(node)
+    elseif node.kind == "database" then
+      self.handler:set_current_connection(node.connection_id)
+      self.handler:connection_select_database(node.connection_id, node.database)
       self:toggle_node(node.key)
       self:refresh()
-    elseif node.kind == "helper" then
-      self:insert_query(node.query)
-    elseif node.kind == "database" then
-      self.handler:connection_select_database(node.connection_id, node.database)
+    elseif node.kind == "root" or node.kind == "source" or node.kind == "connection" then
+      if node.kind == "connection" then
+        self.handler:set_current_connection(node.connection_id)
+      end
+      self:toggle_node(node.key)
       self:refresh()
     elseif node.kind == "add_connection" then
       self:connection_prompt({}, function(details)

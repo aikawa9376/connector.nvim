@@ -4,18 +4,37 @@ local util = require("connector.util")
 
 local uv = vim.uv or vim.loop
 
+local postgres_constraint_query = [[
+SELECT tc.constraint_name, tc.table_name, kcu.column_name, ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name, rc.update_rule, rc.delete_rule
+FROM information_schema.table_constraints AS tc
+JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name
+JOIN information_schema.referential_constraints AS rc ON tc.constraint_name = rc.constraint_name
+JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name
+]]
+
 local builtin_helpers = {
   sqlite = {
-    ["Select all"] = "SELECT * FROM {{ .Table }} LIMIT 200;",
-    ["Count rows"] = "SELECT COUNT(*) AS count FROM {{ .Table }};",
+    List = "SELECT * FROM {{ .Table }} LIMIT 500;",
+    Columns = "PRAGMA table_info('{{ .TableName }}');",
+    Indexes = "SELECT * FROM pragma_index_list('{{ .TableName }}');",
+    ["Foreign Keys"] = "SELECT * FROM pragma_foreign_key_list('{{ .TableName }}');",
+    ["Primary Keys"] = "SELECT * FROM pragma_index_list('{{ .TableName }}') WHERE origin = 'pk';",
   },
   postgres = {
-    ["Select all"] = "SELECT * FROM {{ .Table }} LIMIT 200;",
-    ["Count rows"] = "SELECT COUNT(*) AS count FROM {{ .Table }};",
+    List = "SELECT * FROM {{ .Table }} LIMIT 500;",
+    Columns = "SELECT * FROM information_schema.columns WHERE table_name = '{{ .TableName }}' AND table_schema = '{{ .Schema }}';",
+    Indexes = "SELECT * FROM pg_indexes WHERE tablename = '{{ .TableName }}' AND schemaname = '{{ .Schema }}';",
+    ["Foreign Keys"] = postgres_constraint_query
+      .. " WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = '{{ .TableName }}' AND tc.table_schema = '{{ .Schema }}';",
+    ["Primary Keys"] = postgres_constraint_query
+      .. " WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = '{{ .TableName }}' AND tc.table_schema = '{{ .Schema }}';",
   },
   mysql = {
-    ["Select all"] = "SELECT * FROM {{ .Table }} LIMIT 200;",
-    ["Count rows"] = "SELECT COUNT(*) AS count FROM {{ .Table }};",
+    List = "SELECT * FROM {{ .Table }} LIMIT 500;",
+    Columns = "DESCRIBE {{ .Table }};",
+    Indexes = "SHOW INDEXES FROM {{ .Table }};",
+    ["Foreign Keys"] = "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = '{{ .Schema }}' AND TABLE_NAME = '{{ .TableName }}' AND CONSTRAINT_TYPE = 'FOREIGN KEY';",
+    ["Primary Keys"] = "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = '{{ .Schema }}' AND TABLE_NAME = '{{ .TableName }}' AND CONSTRAINT_TYPE = 'PRIMARY KEY';",
   },
 }
 
@@ -33,6 +52,8 @@ function Handler:new(config)
     running_calls = {},
     structure_cache = {},
     database_cache = {},
+    table_index = {},
+    table_index_all_loaded = {},
     listeners = {},
   }
   setmetatable(o, self)
@@ -120,6 +141,8 @@ function Handler:source_reload(id)
 
   self.structure_cache = {}
   self.database_cache = {}
+  self.table_index = {}
+  self.table_index_all_loaded = {}
   self:emit("connections_changed", { source_id = id })
 end
 
@@ -189,9 +212,14 @@ function Handler:connection_get_helpers(id, opts)
     builtin_helpers[connection_type] or {},
     self.config.extra_helpers[connection_type] or {}
   )
+  local schema = opts.schema or ""
+  if schema == "" and connection_type == "postgres" then
+    schema = "public"
+  end
   local vars = {
-    Table = util.qualify_table(connection_type, opts.schema, opts.table),
-    Schema = opts.schema or "",
+    Table = util.qualify_table(connection_type, schema ~= "" and schema or nil, opts.table),
+    Schema = schema,
+    TableName = opts.table or "",
     Materialization = opts.materialization or "table",
   }
   local rendered = {}
@@ -249,8 +277,32 @@ function Handler:attach_editable_result(conn, query, result)
   return result
 end
 
-function Handler:connection_execute(id, query)
-  local conn = assert(self.connections[id], "connection not found: " .. id)
+function Handler:connection_execute(id, query, done)
+  local resolved_id, entries = self:prepare_query_context(id, query)
+  if entries then
+    self:pick_table_context(id, entries, { notify = true }, function(chosen_id)
+      if not chosen_id then
+        if done then
+          done(nil)
+        end
+        return
+      end
+      local call = self:begin_connection_execute(chosen_id, query)
+      if done then
+        done(call)
+      end
+    end)
+    return nil
+  end
+
+  local call = self:begin_connection_execute(resolved_id or id, query)
+  if done then
+    done(call)
+  end
+  return call
+end
+
+function Handler:begin_connection_execute(id, query)
   local call = {
     id = util.random_id("call"),
     connection_id = id,
@@ -260,14 +312,20 @@ function Handler:connection_execute(id, query)
     started_at_hr = uv.hrtime(),
     result = nil,
     error = nil,
+    context_retried = false,
   }
   self.calls[call.id] = call
   table.insert(self.call_order, 1, call.id)
   self:emit("call_state_changed", vim.deepcopy(call))
+  self:run_call(call)
+  return vim.deepcopy(call)
+end
 
+function Handler:run_call(call)
+  assert(self.connections[call.connection_id], "connection not found: " .. call.connection_id)
   local handle = backend.request_async(self.config, "execute", {
-    connection = util.expand_connection(conn),
-    query = query,
+    connection = util.expand_connection(self.connections[call.connection_id]),
+    query = call.query,
   }, function(err, result)
     self.running_calls[call.id] = nil
     if call.state == "canceled" then
@@ -275,12 +333,46 @@ function Handler:connection_execute(id, query)
       return
     end
 
+    if err and not call.context_retried then
+      local entries = self:failed_retry_candidates(call.query, call.connection_id)
+      if #entries == 1 then
+        call.context_retried = true
+        call.connection_id = self:apply_table_context(call.connection_id, entries[1], { notify = true })
+        call.state = "executing"
+        call.error = nil
+        self:emit("call_state_changed", vim.deepcopy(call))
+        self:run_call(call)
+        return
+      elseif #entries > 1 then
+        call.context_retried = true
+        self:pick_table_context(call.connection_id, entries, { notify = true }, function(chosen_id)
+          if chosen_id then
+            call.connection_id = chosen_id
+            call.state = "executing"
+            call.error = nil
+            self:emit("call_state_changed", vim.deepcopy(call))
+            self:run_call(call)
+          else
+            call.state = "failed"
+            call.error = tostring(err)
+            if call.started_at_hr then
+              call.time_taken_s = (uv.hrtime() - call.started_at_hr) / 1e9
+            end
+            call.completed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+            self:emit("call_state_changed", vim.deepcopy(call))
+          end
+        end)
+        return
+      end
+    end
+
     if err then
       call.state = "failed"
       call.error = tostring(err)
     else
       call.state = "archived"
-      call.result = self:attach_editable_result(conn, query, result)
+      local current_conn = self.connections[call.connection_id]
+      call.result = self:attach_editable_result(current_conn, call.query, result)
       call.error = nil
     end
     if call.started_at_hr then
@@ -290,16 +382,310 @@ function Handler:connection_execute(id, query)
     self:emit("call_state_changed", vim.deepcopy(call))
   end)
   self.running_calls[call.id] = handle
-  return vim.deepcopy(call)
 end
 
-function Handler:connection_get_structure(id)
-  if self.structure_cache[id] then
-    return vim.deepcopy(self.structure_cache[id])
+function Handler:clear_table_index(id)
+  self.table_index[id] = nil
+  self.table_index_all_loaded[id] = nil
+end
+
+function Handler:format_table_entry_label(entry)
+  local conn = self.connections[entry.connection_id]
+  local conn_name = conn and conn.name or entry.connection_id
+  if entry.schema and entry.schema ~= "" then
+    return ("%s · %s.%s"):format(conn_name, entry.schema, entry.table)
   end
+  return ("%s · %s"):format(conn_name, entry.table)
+end
+
+function Handler:pick_table_context(connection_id, entries, opts, on_done)
+  local labels = vim.tbl_map(function(entry)
+    return self:format_table_entry_label(entry)
+  end, entries)
+
+  vim.ui.select(labels, { prompt = "Select table location" }, function(_choice, idx)
+    if not idx then
+      on_done(nil)
+      return
+    end
+    local entry = entries[idx]
+    if not entry then
+      on_done(nil)
+      return
+    end
+    on_done(self:apply_table_context(connection_id, entry, opts or {}))
+  end)
+end
+
+function Handler:candidates_for_ref(connection_id, ref)
+  if ref.schema then
+    local entry = self:resolve_table_reference(connection_id, ref.schema, ref.table)
+    return entry and { entry } or {}
+  end
+  return self:find_table_entries(connection_id, ref.table)
+end
+
+function Handler:prepare_query_context(connection_id, query)
+  local refs = util.parse_query_table_references(query)
+  if #refs == 0 then
+    return connection_id, nil
+  end
+
+  self:ensure_table_index(connection_id)
+  local entries = self:candidates_for_ref(connection_id, refs[1])
+  if #entries == 0 then
+    return connection_id, nil
+  end
+  if #entries == 1 then
+    return self:apply_table_context(connection_id, entries[1], { notify = true }), nil
+  end
+  return nil, entries
+end
+
+function Handler:failed_retry_candidates(query, connection_id)
+  local refs = util.parse_query_table_references(query)
+  if #refs == 0 then
+    return {}
+  end
+
+  local conn = self.connections[connection_id]
+  local current_db = conn and conn.database or ""
+  local ref = refs[1]
+
+  if ref.schema then
+    self:ensure_table_index(connection_id)
+    local entry = self:resolve_table_reference(connection_id, ref.schema, ref.table)
+    if not entry then
+      return {}
+    end
+    local entry_db = entry.schema or ""
+    if entry.connection_id ~= connection_id or entry_db ~= current_db then
+      return { entry }
+    end
+    return {}
+  end
+
+  self:ensure_table_index(connection_id)
+  local entries = {}
+  for _, entry in ipairs(self:find_table_entries(connection_id, ref.table)) do
+    local entry_db = entry.schema or ""
+    if entry.connection_id ~= connection_id or entry_db ~= current_db then
+      table.insert(entries, entry)
+    end
+  end
+  return entries
+end
+
+function Handler:index_structure_items(connection_id, items)
+  if not items or #items == 0 then
+    return
+  end
+
+  self.table_index[connection_id] = self.table_index[connection_id] or {}
+  local index = self.table_index[connection_id]
+  for _, item in ipairs(items) do
+    local schema = item.schema or ""
+    local key = util.table_index_key(schema ~= "" and schema or nil, item.name)
+    index[key] = {
+      connection_id = connection_id,
+      schema = schema ~= "" and schema or nil,
+      table = item.name,
+      materialization = item.materialization,
+    }
+  end
+end
+
+function Handler:ensure_table_index(connection_id)
+  if self.table_index_all_loaded[connection_id] then
+    return
+  end
+
+  local ok = pcall(self.connection_get_structure, self, connection_id, "", { all = true })
+  if ok then
+    self.table_index_all_loaded[connection_id] = true
+  end
+end
+
+function Handler:lookup_table_index(connection_id, schema, tbl)
+  local index = self.table_index[connection_id]
+  if not index then
+    return nil
+  end
+
+  if schema and schema ~= "" then
+    return index[util.table_index_key(schema, tbl)]
+  end
+
+  local conn = self.connections[connection_id]
+  local current_schema = conn and conn.database or ""
+  if current_schema ~= "" then
+    local entry = index[util.table_index_key(current_schema, tbl)]
+    if entry then
+      return entry
+    end
+  end
+
+  local entry = index[tbl]
+  if entry then
+    return entry
+  end
+
+  local suffix = "\0" .. tbl
+  for key, candidate in pairs(index) do
+    if vim.endswith(key, suffix) then
+      return candidate
+    end
+  end
+
+  return nil
+end
+
+function Handler:find_table_entries(connection_id, tbl)
+  local entries = {}
+  local seen = {}
+
+  local function collect(id)
+    self:ensure_table_index(id)
+    local index = self.table_index[id]
+    if not index then
+      return
+    end
+    local suffix = "\0" .. tbl
+    for key, entry in pairs(index) do
+      if key == tbl or vim.endswith(key, suffix) then
+        local dedupe = util.table_index_key(entry.schema, entry.table) .. "\0" .. entry.connection_id
+        if not seen[dedupe] then
+          seen[dedupe] = true
+          table.insert(entries, entry)
+        end
+      end
+    end
+  end
+
+  collect(connection_id)
+  for id in pairs(self.connections) do
+    if id ~= connection_id then
+      collect(id)
+    end
+  end
+
+  table.sort(entries, function(left, right)
+    local left_key = left.connection_id .. "\0" .. util.table_index_key(left.schema, left.table)
+    local right_key = right.connection_id .. "\0" .. util.table_index_key(right.schema, right.table)
+    return left_key < right_key
+  end)
+
+  return entries
+end
+
+function Handler:resolve_table_reference(connection_id, schema, tbl)
+  self:ensure_table_index(connection_id)
+  local entry = self:lookup_table_index(connection_id, schema, tbl)
+  if entry then
+    return entry
+  end
+
+  for id in pairs(self.connections) do
+    if id ~= connection_id then
+      self:ensure_table_index(id)
+      entry = self:lookup_table_index(id, schema, tbl)
+      if entry then
+        return entry
+      end
+    end
+  end
+
+  return nil
+end
+
+function Handler:apply_table_context(connection_id, entry, opts)
+  opts = opts or {}
+  local changed = false
+  local database = entry.schema
+
+  if entry.connection_id ~= connection_id then
+    connection_id = entry.connection_id
+    self:set_current_connection(connection_id)
+    changed = true
+  end
+
+  local conn = self.connections[connection_id]
+  local kind = (conn.type or ""):lower()
+  if (kind == "mysql" or kind == "mariadb") and database and database ~= "" then
+    local current_db = self:connection_list_databases(connection_id)
+    if current_db ~= database then
+      self:connection_select_database(connection_id, database)
+      changed = true
+      if opts.notify then
+        util.notify(("Switched to database %s"):format(database), vim.log.levels.INFO)
+      end
+    end
+  end
+
+  if changed then
+    self:emit("query_context_changed", {
+      connection_id = connection_id,
+      database = database,
+      source_id = conn.source_id,
+    })
+  end
+
+  return connection_id
+end
+
+function Handler:apply_query_context(connection_id, query)
+  local resolved_id, entries = self:prepare_query_context(connection_id, query)
+  if entries then
+    return connection_id
+  end
+  return resolved_id or connection_id
+end
+
+function Handler:clear_structure_cache(id)
+  for key in pairs(self.structure_cache) do
+    if key == id or vim.startswith(key, id .. ":") then
+      self.structure_cache[key] = nil
+    end
+  end
+  self:clear_table_index(id)
+end
+
+function Handler:connection_get_structure(id, database, opts)
+  if type(database) == "table" then
+    opts = database
+    database = ""
+  end
+  opts = opts or {}
+  database = database or ""
+
   local conn = assert(self.connections[id], "connection not found: " .. id)
-  local result = backend.request_sync(self.config, "structure", { connection = util.expand_connection(conn) }) or {}
-  self.structure_cache[id] = result
+  local cache_key
+  if opts.all then
+    cache_key = id .. ":__all__"
+  elseif database ~= "" then
+    cache_key = id .. ":" .. database
+  else
+    cache_key = id
+  end
+
+  if self.structure_cache[cache_key] then
+    return vim.deepcopy(self.structure_cache[cache_key])
+  end
+
+  local request_conn = vim.deepcopy(conn)
+  if opts.all then
+    request_conn.database = nil
+  elseif database ~= "" then
+    request_conn.database = database
+  end
+  local result = backend.request_sync(self.config, "structure", {
+    connection = util.expand_connection(request_conn),
+  }) or {}
+  self.structure_cache[cache_key] = result
+  self:index_structure_items(id, result)
+  if opts.all then
+    self.table_index_all_loaded[id] = true
+  end
   return vim.deepcopy(result)
 end
 
@@ -327,7 +713,7 @@ end
 function Handler:connection_select_database(id, database)
   local conn = assert(self.connections[id], "connection not found: " .. id)
   conn.database = database
-  self.structure_cache[id] = nil
+  self:clear_structure_cache(id)
   self.database_cache[id] = nil
   self:emit("connections_changed", { source_id = conn.source_id })
 end

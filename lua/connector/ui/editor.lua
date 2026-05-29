@@ -222,8 +222,11 @@ function EditorUI:run_query(query)
   if not connection then
     error("no active connection selected")
   end
-  local call = self.handler:connection_execute(connection.id, query)
-  self.result:set_call(call)
+  self.handler:connection_execute(connection.id, query, function(call)
+    if call then
+      self.result:set_call(call)
+    end
+  end)
 end
 
 function EditorUI:do_action(action)

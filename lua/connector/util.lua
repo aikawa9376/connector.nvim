@@ -235,6 +235,137 @@ function M.parse_editable_select(query)
   return nil
 end
 
+local SQL_KEYWORDS = {
+  select = true,
+  from = true,
+  where = true,
+  join = true,
+  inner = true,
+  left = true,
+  right = true,
+  outer = true,
+  cross = true,
+  on = true,
+  as = true,
+  ["and"] = true,
+  ["or"] = true,
+  ["not"] = true,
+  null = true,
+  limit = true,
+  offset = true,
+  order = true,
+  by = true,
+  group = true,
+  having = true,
+  union = true,
+  into = true,
+  update = true,
+  set = true,
+  values = true,
+  insert = true,
+  delete = true,
+  dual = true,
+}
+
+function M.table_index_key(schema, tbl)
+  if schema and schema ~= "" then
+    return schema .. "\0" .. tbl
+  end
+  return tbl
+end
+
+function M.parse_query_table_references(query)
+  if not query or query == "" then
+    return {}
+  end
+
+  local refs = {}
+  local seen = {}
+
+  local function add(schema, tbl)
+    schema = schema ~= "" and schema or nil
+    local key = M.table_index_key(schema, tbl)
+    if seen[key] then
+      return
+    end
+    seen[key] = true
+    table.insert(refs, { schema = schema, table = tbl })
+  end
+
+  local function add_unqualified(tbl)
+    if SQL_KEYWORDS[tbl:lower()] or tbl:find("%.") then
+      return
+    end
+    add(nil, tbl)
+  end
+
+  for schema, tbl in query:gmatch("`([^`]+)`%.`([^`]+)`") do
+    add(schema, tbl)
+  end
+
+  for schema, tbl in query:gmatch('"([^"]+)"%."([^"]+)"') do
+    add(schema, tbl)
+  end
+
+  for schema, tbl in query:gmatch("[Ff][Rr][Oo][Mm]%s+([%w_]+)%.([%w_]+)") do
+    add(schema, tbl)
+  end
+
+  for schema, tbl in query:gmatch("[Jj][Oo][Ii][Nn]%s+([%w_]+)%.([%w_]+)") do
+    add(schema, tbl)
+  end
+
+  for schema, tbl in query:gmatch("[Ii][Nn][Tt][Oo]%s+([%w_]+)%.([%w_]+)") do
+    add(schema, tbl)
+  end
+
+  for schema, tbl in query:gmatch("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_]+)%.([%w_]+)") do
+    add(schema, tbl)
+  end
+
+  for tbl in query:gmatch("[Ff][Rr][Oo][Mm]%s+`([^`]+)`") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch('[Ff][Rr][Oo][Mm]%s+"([^"]+)"') do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Ff][Rr][Oo][Mm]%s+([%w_]+)") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Jj][Oo][Ii][Nn]%s+`([^`]+)`") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch('[Jj][Oo][Ii][Nn]%s+"([^"]+)"') do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Jj][Oo][Ii][Nn]%s+([%w_]+)") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Ii][Nn][Tt][Oo]%s+`([^`]+)`") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Ii][Nn][Tt][Oo]%s+([%w_]+)") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Uu][Pp][Dd][Aa][Tt][Ee]%s+`([^`]+)`") do
+    add_unqualified(tbl)
+  end
+
+  for tbl in query:gmatch("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_]+)") do
+    add_unqualified(tbl)
+  end
+
+  return refs
+end
+
 function M.apply_buffer_mappings(bufnr, mappings, callback)
   for _, mapping in ipairs(mappings or {}) do
     vim.keymap.set(mapping.mode, mapping.key, function()

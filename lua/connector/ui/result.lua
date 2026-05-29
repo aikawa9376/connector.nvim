@@ -72,7 +72,7 @@ function ResultUI:apply_highlight()
   end
   local current_win = vim.api.nvim_get_current_win()
   vim.api.nvim_set_current_win(self.window)
-  vim.cmd([[match NonText /^\s*\d\+\|─\|│\|┼/]])
+  vim.cmd([[match Delimiter /^\s*\d\+\|─\|│\|┼/]])
   if current_win ~= self.window and vim.api.nvim_win_is_valid(current_win) then
     vim.api.nvim_set_current_win(current_win)
   end

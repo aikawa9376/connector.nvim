@@ -600,21 +600,44 @@ fn execute_mysql(url: &str, query: &str) -> Result<ExecuteResponse> {
     })
 }
 
+fn mysql_database_from_url(url: &str) -> Option<String> {
+    url::Url::parse(url).ok().and_then(|parsed| {
+        let database = parsed.path().trim_start_matches('/');
+        if database.is_empty() {
+            None
+        } else {
+            Some(database.to_string())
+        }
+    })
+}
+
 fn structure_mysql(url: &str) -> Result<Vec<StructureItem>> {
     let opts = mysql::Opts::from_url(url)?;
     let pool = mysql::Pool::new(opts)?;
     let mut conn = pool.get_conn()?;
-    let query = "
+    let query_all = "
         select table_schema, table_name,
           case
             when table_type = 'VIEW' then 'view'
             else 'table'
           end as materialization
         from information_schema.tables
-        where table_schema = database()
         order by table_schema, table_name
     ";
-    let rows: Vec<(String, String, String)> = conn.query(query)?;
+    let query_for_database = "
+        select table_schema, table_name,
+          case
+            when table_type = 'VIEW' then 'view'
+            else 'table'
+          end as materialization
+        from information_schema.tables
+        where table_schema = ?
+        order by table_schema, table_name
+    ";
+    let rows: Vec<(String, String, String)> = match mysql_database_from_url(url) {
+        Some(database) => conn.exec(query_for_database, (database,))?,
+        None => conn.query(query_all)?,
+    };
     Ok(rows
         .into_iter()
         .map(|(schema, name, materialization)| StructureItem {
