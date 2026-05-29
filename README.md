@@ -8,6 +8,7 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
 - connection sources: memory, env, file
 - query execution from editor, current line, or selection
 - result paging and CSV/JSON/table export
+- in-cell updates for simple `select * from table ...` result sets
 - structure browsing for SQLite, PostgreSQL, and MySQL
 - connection CRUD for writable sources
 - database switching for PostgreSQL and MySQL
@@ -103,9 +104,13 @@ export CONNECTOR_CONNECTIONS='[
 
 - `L` / `H` next/previous page
 - `E` / `F` last/first page
+- `<CR>` / `i` edit the current cell for editable results
 - `yaj` / `yac` yank current row or selection as JSON / CSV
 - `yaJ` / `yaC` yank all rows as JSON / CSV
 - `<C-c>` cancel the active call
+
+Editable results currently target **single-table `select * from ...` queries with a primary key**. Primary-key
+columns stay read-only, and you can type `NULL` to clear nullable cells.
 
 ## Backend
 

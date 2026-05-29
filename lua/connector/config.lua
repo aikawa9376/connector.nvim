@@ -37,6 +37,8 @@ function config.default()
         { key = "yac", mode = "n", action = "yank_current_csv" },
         { key = "yac", mode = "v", action = "yank_selection_csv" },
         { key = "yaC", mode = "n", action = "yank_all_csv" },
+        { key = "<CR>", mode = "n", action = "edit_cell" },
+        { key = "i", mode = "n", action = "edit_cell" },
         { key = "<C-c>", mode = "n", action = "cancel_call" },
       },
     },
@@ -88,4 +90,3 @@ function config.validate(cfg)
 end
 
 return config
-

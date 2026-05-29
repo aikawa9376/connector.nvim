@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use mysql::prelude::Queryable;
 use postgres::{Client, NoTls, SimpleQueryMessage};
 use regex::Regex;
-use rusqlite::types::ValueRef;
+use rusqlite::types::{Value as SqliteValue, ValueRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
@@ -24,6 +24,7 @@ enum Command {
     Structure,
     Columns,
     ListDatabases,
+    UpdateRow,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +55,31 @@ struct ConnectionRequest {
     connection: ConnectionInput,
 }
 
+#[derive(Debug, Deserialize)]
+struct ColumnUpdateInput {
+    name: String,
+    data_type: String,
+    nullable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyFieldInput {
+    name: String,
+    data_type: String,
+    nullable: bool,
+    value: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRowRequest {
+    connection: ConnectionInput,
+    table: String,
+    schema: Option<String>,
+    column: ColumnUpdateInput,
+    keys: Vec<KeyFieldInput>,
+    new_value_text: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ColumnMeta {
     name: String,
@@ -81,12 +107,19 @@ struct ColumnInfo {
     nullable: bool,
     default_value: Option<String>,
     ordinal_position: i64,
+    primary_key: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct ListDatabasesResponse {
     current: String,
     available: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateRowResponse {
+    affected_rows: u64,
+    value: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +160,17 @@ fn run() -> Result<()> {
         Command::ListDatabases => {
             let request: ConnectionRequest = read_stdin_json()?;
             print_json(&list_databases(request.connection)?)?;
+        }
+        Command::UpdateRow => {
+            let request: UpdateRowRequest = read_stdin_json()?;
+            print_json(&update_row(
+                request.connection,
+                request.table,
+                request.schema,
+                request.column,
+                request.keys,
+                request.new_value_text,
+            )?)?;
         }
     }
 
@@ -268,6 +312,28 @@ fn list_databases(connection: ConnectionInput) -> Result<ListDatabasesResponse> 
     }
 }
 
+fn update_row(
+    connection: ConnectionInput,
+    table: String,
+    schema: Option<String>,
+    column: ColumnUpdateInput,
+    keys: Vec<KeyFieldInput>,
+    new_value_text: String,
+) -> Result<UpdateRowResponse> {
+    if keys.is_empty() {
+        bail!("update keys are required");
+    }
+
+    let url = effective_url(&connection)?;
+    let value = parse_text_value(&new_value_text, &column.data_type, column.nullable)?;
+    let affected_rows = match normalize_kind(&connection.kind)? {
+        DriverKind::Sqlite => update_row_sqlite(&url, &table, schema.as_deref(), &column, &keys, &value)?,
+        DriverKind::Postgres => update_row_postgres(&url, &table, schema.as_deref(), &column, &keys, &value)?,
+        DriverKind::Mysql => update_row_mysql(&url, &table, schema.as_deref(), &column, &keys, &value)?,
+    };
+    Ok(UpdateRowResponse { affected_rows, value })
+}
+
 fn execute_sqlite(url: &str, query: &str) -> Result<ExecuteResponse> {
     let path = sqlite_path(url);
     let conn = rusqlite::Connection::open(path).context("failed to open sqlite database")?;
@@ -350,6 +416,7 @@ fn columns_sqlite(url: &str, table: &str) -> Result<Vec<ColumnInfo>> {
                 data_type: row.get::<_, String>(2)?,
                 nullable: row.get::<_, i64>(3)? == 0,
                 default_value: row.get::<_, Option<String>>(4)?,
+                primary_key: row.get::<_, i64>(5)? > 0,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -437,8 +504,24 @@ fn columns_postgres(url: &str, table: &str, schema: Option<String>) -> Result<Ve
     let mut client = Client::connect(url, NoTls)?;
     let schema = schema.unwrap_or_else(|| "public".to_string());
     let query = "
-        select column_name, data_type, is_nullable, column_default, ordinal_position
-        from information_schema.columns
+        select
+            c.column_name,
+            c.data_type,
+            c.is_nullable,
+            c.column_default,
+            c.ordinal_position,
+            exists (
+              select 1
+              from information_schema.table_constraints tc
+              join information_schema.key_column_usage kcu
+                on tc.constraint_name = kcu.constraint_name
+               and tc.table_schema = kcu.table_schema
+             where tc.constraint_type = 'PRIMARY KEY'
+               and tc.table_schema = c.table_schema
+               and tc.table_name = c.table_name
+               and kcu.column_name = c.column_name
+            ) as primary_key
+        from information_schema.columns c
         where table_schema = $1 and table_name = $2
         order by ordinal_position
     ";
@@ -451,6 +534,7 @@ fn columns_postgres(url: &str, table: &str, schema: Option<String>) -> Result<Ve
             nullable: row.get::<_, String>(2) == "YES",
             default_value: row.get::<_, Option<String>>(3),
             ordinal_position: row.get::<_, i32>(4) as i64,
+            primary_key: row.get::<_, bool>(5),
         })
         .collect();
     Ok(columns)
@@ -552,20 +636,21 @@ fn columns_mysql(url: &str, table: &str, schema: Option<String>) -> Result<Vec<C
             .ok_or_else(|| anyhow!("failed to determine current database"))?,
     };
     let query = "
-        select column_name, data_type, is_nullable, column_default, ordinal_position
+        select column_name, data_type, is_nullable, column_default, ordinal_position, column_key
         from information_schema.columns
         where table_schema = ? and table_name = ?
         order by ordinal_position
     ";
-    let rows: Vec<(String, String, String, Option<String>, i64)> = conn.exec(query, (schema, table))?;
+    let rows: Vec<(String, String, String, Option<String>, i64, String)> = conn.exec(query, (schema, table))?;
     Ok(rows
         .into_iter()
-        .map(|(name, data_type, is_nullable, default_value, ordinal_position)| ColumnInfo {
+        .map(|(name, data_type, is_nullable, default_value, ordinal_position, column_key)| ColumnInfo {
             name,
             data_type,
             nullable: is_nullable == "YES",
             default_value,
             ordinal_position,
+            primary_key: column_key == "PRI",
         })
         .collect())
 }
@@ -619,6 +704,262 @@ fn sqlite_path(url: &str) -> String {
 
 fn quote_sqlite_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn quote_identifier(kind: DriverKind, value: &str) -> String {
+    match kind {
+        DriverKind::Mysql => format!("`{}`", value.replace('`', "``")),
+        DriverKind::Sqlite | DriverKind::Postgres => format!("\"{}\"", value.replace('"', "\"\"")),
+    }
+}
+
+fn qualify_table_name(kind: DriverKind, schema: Option<&str>, table: &str) -> String {
+    match schema.filter(|value| !value.is_empty()) {
+        Some(schema_name) => format!("{}.{}", quote_identifier(kind, schema_name), quote_identifier(kind, table)),
+        None => quote_identifier(kind, table),
+    }
+}
+
+fn is_boolean_type(data_type: &str) -> bool {
+    data_type.contains("bool")
+}
+
+fn is_integer_type(data_type: &str) -> bool {
+    data_type.contains("int") || data_type == "serial" || data_type == "bigserial"
+}
+
+fn is_float_type(data_type: &str) -> bool {
+    data_type.contains("numeric")
+        || data_type.contains("decimal")
+        || data_type.contains("real")
+        || data_type.contains("double")
+        || data_type.contains("float")
+}
+
+fn parse_text_value(text: &str, data_type: &str, nullable: bool) -> Result<Value> {
+    normalize_json_value(&Value::String(text.to_string()), data_type, nullable)
+}
+
+fn normalize_json_value(value: &Value, data_type: &str, nullable: bool) -> Result<Value> {
+    if value.is_null() {
+        if nullable {
+            return Ok(Value::Null);
+        }
+        bail!("column is not nullable");
+    }
+
+    let lowered = data_type.to_ascii_lowercase();
+    if let Some(text) = value.as_str() {
+        if nullable && text.trim().eq_ignore_ascii_case("null") {
+            return Ok(Value::Null);
+        }
+        if is_boolean_type(&lowered) {
+            let parsed = match text.trim().to_ascii_lowercase().as_str() {
+                "true" | "t" | "1" => true,
+                "false" | "f" | "0" => false,
+                _ => bail!("expected a boolean value"),
+            };
+            return Ok(Value::Bool(parsed));
+        }
+        if is_integer_type(&lowered) {
+            return Ok(json!(text.trim().parse::<i64>().context("expected an integer value")?));
+        }
+        if is_float_type(&lowered) {
+            let parsed = text.trim().parse::<f64>().context("expected a numeric value")?;
+            let number = serde_json::Number::from_f64(parsed).ok_or_else(|| anyhow!("expected a finite numeric value"))?;
+            return Ok(Value::Number(number));
+        }
+        return Ok(Value::String(text.to_string()));
+    }
+
+    if is_boolean_type(&lowered) {
+        if let Some(boolean) = value.as_bool() {
+            return Ok(Value::Bool(boolean));
+        }
+    }
+
+    if is_integer_type(&lowered) {
+        if let Some(integer) = value.as_i64() {
+            return Ok(json!(integer));
+        }
+        if let Some(unsigned) = value.as_u64() {
+            return Ok(json!(i64::try_from(unsigned).context("unsigned integer is too large")?));
+        }
+    }
+
+    if is_float_type(&lowered) {
+        if let Some(number) = value.as_f64() {
+            let number = serde_json::Number::from_f64(number).ok_or_else(|| anyhow!("expected a finite numeric value"))?;
+            return Ok(Value::Number(number));
+        }
+    }
+
+    Ok(value.clone())
+}
+
+fn json_to_sqlite_value(value: &Value) -> Result<SqliteValue> {
+    Ok(match value {
+        Value::Null => SqliteValue::Null,
+        Value::Bool(boolean) => SqliteValue::Integer(if *boolean { 1 } else { 0 }),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                SqliteValue::Integer(integer)
+            } else {
+                SqliteValue::Real(number.as_f64().ok_or_else(|| anyhow!("invalid numeric value"))?)
+            }
+        }
+        Value::String(text) => SqliteValue::Text(text.clone()),
+        other => SqliteValue::Text(serde_json::to_string(other)?),
+    })
+}
+
+fn json_to_postgres_param(value: &Value) -> Result<Box<dyn postgres::types::ToSql + Sync>> {
+    Ok(match value {
+        Value::Null => Box::new(Option::<String>::None),
+        Value::Bool(boolean) => Box::new(*boolean),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                Box::new(integer)
+            } else {
+                Box::new(number.as_f64().ok_or_else(|| anyhow!("invalid numeric value"))?)
+            }
+        }
+        Value::String(text) => Box::new(text.clone()),
+        other => Box::new(serde_json::to_string(other)?),
+    })
+}
+
+fn json_to_mysql_value(value: &Value) -> Result<mysql::Value> {
+    Ok(match value {
+        Value::Null => mysql::Value::NULL,
+        Value::Bool(boolean) => mysql::Value::Int(if *boolean { 1 } else { 0 }),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                mysql::Value::Int(integer)
+            } else if let Some(unsigned) = number.as_u64() {
+                mysql::Value::UInt(unsigned)
+            } else {
+                mysql::Value::Double(number.as_f64().ok_or_else(|| anyhow!("invalid numeric value"))?)
+            }
+        }
+        Value::String(text) => mysql::Value::Bytes(text.as_bytes().to_vec()),
+        other => mysql::Value::Bytes(serde_json::to_string(other)?.into_bytes()),
+    })
+}
+
+fn normalized_key_values(keys: &[KeyFieldInput]) -> Result<Vec<(String, String, Value)>> {
+    keys.iter()
+        .map(|key| {
+            Ok((
+                key.name.clone(),
+                key.data_type.clone(),
+                normalize_json_value(&key.value, &key.data_type, key.nullable)?,
+            ))
+        })
+        .collect()
+}
+
+fn update_row_sqlite(
+    url: &str,
+    table: &str,
+    schema: Option<&str>,
+    column: &ColumnUpdateInput,
+    keys: &[KeyFieldInput],
+    value: &Value,
+) -> Result<u64> {
+    let conn = rusqlite::Connection::open(sqlite_path(url)).context("failed to open sqlite database")?;
+    let mut params = vec![json_to_sqlite_value(value)?];
+    let mut clauses = Vec::new();
+
+    for (name, _, key_value) in normalized_key_values(keys)? {
+        if key_value.is_null() {
+            clauses.push(format!("{} IS NULL", quote_identifier(DriverKind::Sqlite, &name)));
+        } else {
+            clauses.push(format!(
+                "{} = ?{}",
+                quote_identifier(DriverKind::Sqlite, &name),
+                params.len() + 1
+            ));
+            params.push(json_to_sqlite_value(&key_value)?);
+        }
+    }
+
+    let query = format!(
+        "UPDATE {} SET {} = ?1 WHERE {}",
+        qualify_table_name(DriverKind::Sqlite, schema, table),
+        quote_identifier(DriverKind::Sqlite, &column.name),
+        clauses.join(" AND ")
+    );
+    Ok(conn.execute(&query, rusqlite::params_from_iter(params))? as u64)
+}
+
+fn update_row_postgres(
+    url: &str,
+    table: &str,
+    schema: Option<&str>,
+    column: &ColumnUpdateInput,
+    keys: &[KeyFieldInput],
+    value: &Value,
+) -> Result<u64> {
+    let mut client = Client::connect(url, NoTls).context("failed to connect to postgres")?;
+    let mut params = vec![json_to_postgres_param(value)?];
+    let mut clauses = Vec::new();
+
+    for (name, _, key_value) in normalized_key_values(keys)? {
+        if key_value.is_null() {
+            clauses.push(format!("{} IS NULL", quote_identifier(DriverKind::Postgres, &name)));
+        } else {
+            let param_index = params.len() + 1;
+            clauses.push(format!(
+                "{} = ${}",
+                quote_identifier(DriverKind::Postgres, &name),
+                param_index
+            ));
+            params.push(json_to_postgres_param(&key_value)?);
+        }
+    }
+
+    let query = format!(
+        "UPDATE {} SET {} = $1 WHERE {}",
+        qualify_table_name(DriverKind::Postgres, schema, table),
+        quote_identifier(DriverKind::Postgres, &column.name),
+        clauses.join(" AND ")
+    );
+    let param_refs = params.iter().map(|value| value.as_ref()).collect::<Vec<_>>();
+    Ok(client.execute(&query, &param_refs)?)
+}
+
+fn update_row_mysql(
+    url: &str,
+    table: &str,
+    schema: Option<&str>,
+    column: &ColumnUpdateInput,
+    keys: &[KeyFieldInput],
+    value: &Value,
+) -> Result<u64> {
+    let opts = mysql::Opts::from_url(url).context("failed to parse mysql connection URL")?;
+    let pool = mysql::Pool::new(opts)?;
+    let mut conn = pool.get_conn()?;
+    let mut params = vec![json_to_mysql_value(value)?];
+    let mut clauses = Vec::new();
+
+    for (name, _, key_value) in normalized_key_values(keys)? {
+        if key_value.is_null() {
+            clauses.push(format!("{} IS NULL", quote_identifier(DriverKind::Mysql, &name)));
+        } else {
+            clauses.push(format!("{} = ?", quote_identifier(DriverKind::Mysql, &name)));
+            params.push(json_to_mysql_value(&key_value)?);
+        }
+    }
+
+    let query = format!(
+        "UPDATE {} SET {} = ? WHERE {}",
+        qualify_table_name(DriverKind::Mysql, schema, table),
+        quote_identifier(DriverKind::Mysql, &column.name),
+        clauses.join(" AND ")
+    );
+    conn.exec_drop(query, mysql::Params::Positional(params))?;
+    Ok(conn.affected_rows())
 }
 
 fn starts_with_row_query(query: &str) -> bool {

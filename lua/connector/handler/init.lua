@@ -204,6 +204,49 @@ function Handler:get_call(id)
   return call and vim.deepcopy(call) or nil
 end
 
+function Handler:attach_editable_result(conn, query, result)
+  local target = util.parse_editable_select(query)
+  if not target then
+    return result
+  end
+
+  local ok, columns = pcall(self.connection_get_columns, self, conn.id, {
+    table = target.table,
+    schema = target.schema,
+    materialization = "table",
+  })
+  if not ok or not columns or #columns == 0 then
+    return result
+  end
+
+  if #columns ~= #(result.columns or {}) then
+    return result
+  end
+
+  local primary_keys = {}
+  for index, column in ipairs(columns) do
+    local result_column = result.columns[index]
+    if not result_column or result_column.name ~= column.name then
+      return result
+    end
+    if column.primary_key then
+      table.insert(primary_keys, column.name)
+    end
+  end
+
+  if #primary_keys == 0 then
+    return result
+  end
+
+  result.editable = {
+    table = target.table,
+    schema = target.schema,
+    columns = columns,
+    primary_keys = primary_keys,
+  }
+  return result
+end
+
 function Handler:connection_execute(id, query)
   local conn = assert(self.connections[id], "connection not found: " .. id)
   local call = {
@@ -234,7 +277,7 @@ function Handler:connection_execute(id, query)
       call.error = tostring(err)
     else
       call.state = "archived"
-      call.result = result
+      call.result = self:attach_editable_result(conn, query, result)
       call.error = nil
     end
     call.completed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -346,6 +389,54 @@ function Handler:call_store_result(id, output_format, output, opts)
   else
     error("unsupported output: " .. output)
   end
+end
+
+function Handler:call_update_cell(id, row_index, column_index, new_value_text)
+  local call = assert(self.calls[id], "call not found: " .. id)
+  local result = assert(call.result, "call has no result")
+  local editable = assert(result.editable, "result is not editable")
+  local row = assert(result.rows[row_index + 1], "row out of range")
+  local column = assert(editable.columns[column_index], "column out of range")
+  if column.primary_key then
+    error("primary key columns are read-only")
+  end
+
+  local keys = {}
+  for index, meta in ipairs(editable.columns) do
+    if meta.primary_key then
+      table.insert(keys, {
+        name = meta.name,
+        data_type = meta.data_type,
+        nullable = meta.nullable,
+        value = row[index],
+      })
+    end
+  end
+
+  if #keys == 0 then
+    error("editable result has no primary key metadata")
+  end
+
+  local conn = assert(self.connections[call.connection_id], "connection not found: " .. call.connection_id)
+  local response = backend.request_sync(self.config, "update-row", {
+    connection = util.expand_connection(conn),
+    table = editable.table,
+    schema = editable.schema,
+    column = {
+      name = column.name,
+      data_type = column.data_type,
+      nullable = column.nullable,
+    },
+    keys = keys,
+    new_value_text = new_value_text,
+  })
+  if not response or response.affected_rows == 0 then
+    error("update did not affect any rows")
+  end
+
+  row[column_index] = response.value
+  self:emit("call_state_changed", vim.deepcopy(call))
+  return response.value
 end
 
 return Handler

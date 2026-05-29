@@ -54,7 +54,7 @@ function M.to_table_lines(result, from, to)
   local columns = result.columns or {}
 
   if #columns == 0 then
-    return { result.message or "No result" }, {}
+    return { result.message or "No result" }, {}, {}
   end
 
   local widths = {}
@@ -69,11 +69,21 @@ function M.to_table_lines(result, from, to)
 
   local function render_row(values)
     local cells = {}
+    local line = "| "
     for index, value in ipairs(values) do
       local text = util.value_to_string(value)
-      table.insert(cells, text .. string.rep(" ", (widths[index] or #text) - #text))
+      local padded = text .. string.rep(" ", (widths[index] or #text) - #text)
+      local start_col = #line + 1
+      line = line .. padded
+      local end_col = #line
+      cells[index] = {
+        start_col = start_col,
+        end_col = end_col,
+        width = widths[index] or #text,
+      }
+      line = line .. " | "
     end
-    return "| " .. table.concat(cells, " | ") .. " |"
+    return line:sub(1, -2), cells
   end
 
   local header_values = {}
@@ -83,13 +93,18 @@ function M.to_table_lines(result, from, to)
     separator_values[index] = string.rep("-", widths[index])
   end
 
-  local lines = { render_row(header_values), render_row(separator_values) }
+  local header_line = render_row(header_values)
+  local separator_line = render_row(separator_values)
+  local lines = { header_line, separator_line }
   local line_map = {}
+  local cell_map = {}
   for index, row in ipairs(rows) do
-    table.insert(lines, render_row(row))
+    local line, cells = render_row(row)
+    table.insert(lines, line)
     line_map[#lines] = start_idx + index - 1
+    cell_map[#lines] = cells
   end
-  return lines, line_map
+  return lines, line_map, cell_map
 end
 
 function M.to_table(result, from, to)

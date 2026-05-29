@@ -94,4 +94,8 @@ function core.call_store_result(id, format_name, output, opts)
   state.handler():call_store_result(id, format_name, output, opts)
 end
 
+function core.call_update_cell(id, row_index, column_index, new_value_text)
+  return state.handler():call_update_cell(id, row_index, column_index, new_value_text)
+end
+
 return core

@@ -157,6 +157,60 @@ function M.render_helper(template, vars)
   end))
 end
 
+function M.strip_identifier_quotes(value)
+  return (value:gsub('^"', ""):gsub('"$', ""):gsub("^`", ""):gsub("`$", ""))
+end
+
+function M.parse_editable_select(query)
+  if not query or query == "" then
+    return nil
+  end
+
+  local trimmed = vim.trim(query):gsub(";%s*$", "")
+  local lowered = trimmed:lower()
+  if not lowered:match("^select%s+") then
+    return nil
+  end
+
+  for _, pattern in ipairs({
+    "%f[%a]join%f[%A]",
+    "%f[%a]union%f[%A]",
+    "%f[%a]group%s+by%f[%A]",
+    "%f[%a]having%f[%A]",
+    "%f[%a]distinct%f[%A]",
+    "%f[%a]intersect%f[%A]",
+    "%f[%a]except%f[%A]",
+    "%f[%a]returning%f[%A]",
+    "^with%s+",
+  }) do
+    if lowered:find(pattern) then
+      return nil
+    end
+  end
+
+  local select_list, from_target = trimmed:match("^%s*[Ss][Ee][Ll][Ee][Cc][Tt]%s+(.-)%s+[Ff][Rr][Oo][Mm]%s+([^%s;]+)")
+  if not select_list or vim.trim(select_list) ~= "*" then
+    return nil
+  end
+
+  if from_target:find("%(") then
+    return nil
+  end
+
+  local parts = {}
+  for part in from_target:gmatch("[^%.]+") do
+    table.insert(parts, M.strip_identifier_quotes(vim.trim(part)))
+  end
+
+  if #parts == 1 then
+    return { table = parts[1], schema = nil }
+  elseif #parts == 2 then
+    return { table = parts[2], schema = parts[1] }
+  end
+
+  return nil
+end
+
 function M.apply_buffer_mappings(bufnr, mappings, callback)
   for _, mapping in ipairs(mappings or {}) do
     vim.keymap.set(mapping.mode, mapping.key, function()
@@ -184,4 +238,3 @@ function M.buf_set_lines(bufnr, lines)
 end
 
 return M
-

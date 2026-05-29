@@ -16,6 +16,8 @@ function ResultUI:new(handler, config)
     current_call_id = nil,
     page = 1,
     line_map = {},
+    cell_map = {},
+    editor = nil,
   }
   setmetatable(o, self)
   self.__index = self
@@ -53,6 +55,7 @@ function ResultUI:show(winid)
 end
 
 function ResultUI:render_waiting(call)
+  self:close_editor()
   local lines = {
     ("Call: %s"):format(call.id),
     ("State: %s"):format(call.state),
@@ -65,9 +68,11 @@ function ResultUI:render_waiting(call)
   end
   util.buf_set_lines(self.bufnr, lines)
   self.line_map = {}
+  self.cell_map = {}
 end
 
 function ResultUI:refresh()
+  self:close_editor()
   local call = self:get_call()
   if not call then
     util.buf_set_lines(self.bufnr, {
@@ -76,6 +81,7 @@ function ResultUI:refresh()
       "Use the drawer or BB in the editor to run a query.",
     })
     self.line_map = {}
+    self.cell_map = {}
     return
   end
 
@@ -91,16 +97,24 @@ function ResultUI:refresh()
   local from = (self.page - 1) * page_size
   local to = math.min(from + page_size, #rows)
 
-  local body, line_map = format.to_table_lines(call.result, from, to)
+  local body, line_map, cell_map = format.to_table_lines(call.result, from, to)
   local lines = {
     ("Connection: %s"):format(call.connection_id),
     ("Page %d/%d | Rows %d-%d of %d"):format(self.page, total_pages, math.min(from + 1, #rows), to, #rows),
-    "",
   }
+  if call.result.editable then
+    table.insert(lines, "Editable: <CR>/i edit cell, primary-key columns are read-only, type NULL for nullable cells.")
+  end
+  table.insert(lines, "")
+  local offset = #lines
   vim.list_extend(lines, body)
   self.line_map = {}
+  self.cell_map = {}
   for line, row_index in pairs(line_map) do
-    self.line_map[line + 3] = row_index
+    self.line_map[line + offset] = row_index
+  end
+  for line, cells in pairs(cell_map) do
+    self.cell_map[line + offset] = cells
   end
   util.buf_set_lines(self.bufnr, lines)
 end
@@ -163,6 +177,119 @@ function ResultUI:selected_range()
   end
 end
 
+function ResultUI:selected_cell()
+  local row_index = self.line_map[vim.api.nvim_win_get_cursor(0)[1]]
+  if row_index == nil then
+    return nil
+  end
+
+  local cursor_col = vim.api.nvim_win_get_cursor(0)[2] + 1
+  local cells = self.cell_map[vim.api.nvim_win_get_cursor(0)[1]] or {}
+  for index, cell in ipairs(cells) do
+    if cursor_col >= cell.start_col and cursor_col <= cell.end_col + 2 then
+      return row_index, index, cell
+    end
+  end
+
+  if #cells > 0 then
+    return row_index, 1, cells[1]
+  end
+end
+
+function ResultUI:close_editor()
+  if self.editor and self.editor.win and vim.api.nvim_win_is_valid(self.editor.win) then
+    vim.api.nvim_win_close(self.editor.win, true)
+  end
+  self.editor = nil
+end
+
+function ResultUI:edit_cell()
+  local call = self:get_call()
+  if not call or not call.result or not call.result.editable then
+    util.notify("Current result is read-only. Use a simple 'select * from table ...' result with a primary key.", vim.log.levels.WARN)
+    return
+  end
+
+  local row_index, column_index, cell = self:selected_cell()
+  if not row_index then
+    util.notify("Place the cursor on a data cell to edit it.", vim.log.levels.WARN)
+    return
+  end
+
+  local column = call.result.editable.columns[column_index]
+  if not column then
+    return
+  end
+  if column.primary_key then
+    util.notify("Primary-key columns are read-only.", vim.log.levels.WARN)
+    return
+  end
+
+  local row = call.result.rows[row_index + 1]
+  local original = util.value_to_string(row[column_index])
+  self:close_editor()
+
+  local editor_buf = vim.api.nvim_create_buf(false, true)
+  local width = math.max(cell.width + 2, #original + 1, 8)
+  vim.api.nvim_buf_set_lines(editor_buf, 0, -1, false, { original })
+  vim.bo[editor_buf].bufhidden = "wipe"
+
+  local editor_win = vim.api.nvim_open_win(editor_buf, true, {
+    relative = "win",
+    win = self.window,
+    row = vim.api.nvim_win_get_cursor(self.window)[1] - 1,
+    col = cell.start_col - 1,
+    width = width,
+    height = 1,
+    style = "minimal",
+    border = "rounded",
+    zindex = 80,
+  })
+  self.editor = {
+    buf = editor_buf,
+    win = editor_win,
+    row_index = row_index,
+    column_index = column_index,
+  }
+
+  local function finish(save)
+    local state = self.editor
+    if not state then
+      return
+    end
+    local text = vim.api.nvim_buf_get_lines(state.buf, 0, 1, false)[1] or ""
+    self:close_editor()
+    if not save then
+      if self.window and vim.api.nvim_win_is_valid(self.window) then
+        vim.api.nvim_set_current_win(self.window)
+      end
+      return
+    end
+
+    local ok, err = pcall(self.handler.call_update_cell, self.handler, call.id, state.row_index, state.column_index, text)
+    if not ok then
+      util.notify(err, vim.log.levels.ERROR)
+      return
+    end
+    util.notify("Cell updated.")
+  end
+
+  vim.keymap.set("n", "<CR>", function()
+    finish(true)
+  end, { buffer = editor_buf, silent = true })
+  vim.keymap.set("i", "<CR>", function()
+    finish(true)
+  end, { buffer = editor_buf, silent = true })
+  vim.keymap.set("n", "<Esc>", function()
+    finish(false)
+  end, { buffer = editor_buf, silent = true })
+  vim.keymap.set("i", "<Esc>", function()
+    finish(false)
+  end, { buffer = editor_buf, silent = true })
+  vim.cmd.startinsert()
+  vim.api.nvim_win_set_cursor(editor_win, { 1, #original })
+end
+
 function ResultUI:yank(kind, all_rows)
   local call = self:get_call()
   if not call or not call.result then
@@ -198,6 +325,8 @@ function ResultUI:do_action(action)
     self:yank("csv", false)
   elseif action == "yank_all_csv" then
     self:yank("csv", true)
+  elseif action == "edit_cell" then
+    self:edit_cell()
   elseif action == "cancel_call" then
     local call = self:get_call()
     if call then
@@ -207,4 +336,3 @@ function ResultUI:do_action(action)
 end
 
 return ResultUI
-
