@@ -1,5 +1,6 @@
 local buffer_line = require("connector.ui.buffer_line")
 local candies_module = require("connector.ui.candies")
+local float = require("connector.ui.float")
 local util = require("connector.util")
 
 local DrawerUI = {}
@@ -307,6 +308,7 @@ function DrawerUI:refresh()
           self:add_line(lines, 2, "edit source file", {
             kind = "edit_source",
             key = "edit:" .. source:name(),
+            source_id = source:name(),
             file = source:file(),
           })
         end
@@ -390,7 +392,12 @@ function DrawerUI:do_action(action)
         end
       end)
     elseif node.kind == "edit_source" then
-      vim.cmd("edit " .. vim.fn.fnameescape(node.file))
+      float.editor(node.file, {
+        title = vim.fn.fnamemodify(node.file, ":t"),
+        on_save = function()
+          pcall(self.handler.source_reload, self.handler, node.source_id)
+        end,
+      })
     elseif node.kind == "scratchpad_new" then
       vim.ui.input({ prompt = "Scratchpad name: " }, function(name)
         if not name or name == "" then
