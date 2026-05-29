@@ -130,6 +130,30 @@ function M.value_to_string(value)
   return tostring(value)
 end
 
+function M.display_width(text)
+  text = text or ""
+  if text == "" then
+    return 0
+  end
+  return vim.fn.strdisplaywidth(text)
+end
+
+function M.pad_left(text, width)
+  local gap = width - M.display_width(text)
+  if gap <= 0 then
+    return text
+  end
+  return string.rep(" ", gap) .. text
+end
+
+function M.pad_right(text, width)
+  local gap = width - M.display_width(text)
+  if gap <= 0 then
+    return text
+  end
+  return text .. string.rep(" ", gap)
+end
+
 function M.csv_escape(value)
   local text = M.value_to_string(value)
   if text:find('[,"\n]') then

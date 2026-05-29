@@ -15,6 +15,8 @@ function config.default()
     extra_helpers = {},
     drawer = {
       disable_help = false,
+      disable_candies = false,
+      candies = require("connector.ui.candies").drawer_defaults(),
       mappings = {
         { key = "r", mode = "n", action = "refresh" },
         { key = "<CR>", mode = "n", action = "action_1" },
@@ -51,6 +53,8 @@ function config.default()
       },
     },
     call_log = {
+      disable_candies = false,
+      candies = require("connector.ui.candies").call_log_defaults(),
       mappings = {
         { key = "<CR>", mode = "n", action = "show_result" },
         { key = "<C-c>", mode = "n", action = "cancel_call" },

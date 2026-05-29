@@ -2,6 +2,8 @@ local backend = require("connector.backend")
 local format = require("connector.format")
 local util = require("connector.util")
 
+local uv = vim.uv or vim.loop
+
 local builtin_helpers = {
   sqlite = {
     ["Select all"] = "SELECT * FROM {{ .Table }} LIMIT 200;",
@@ -255,6 +257,7 @@ function Handler:connection_execute(id, query)
     query = query,
     state = "executing",
     started_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    started_at_hr = uv.hrtime(),
     result = nil,
     error = nil,
   }
@@ -279,6 +282,9 @@ function Handler:connection_execute(id, query)
       call.state = "archived"
       call.result = self:attach_editable_result(conn, query, result)
       call.error = nil
+    end
+    if call.started_at_hr then
+      call.time_taken_s = (uv.hrtime() - call.started_at_hr) / 1e9
     end
     call.completed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
     self:emit("call_state_changed", vim.deepcopy(call))
@@ -345,6 +351,9 @@ function Handler:call_cancel(id)
   end
   self.running_calls[id] = nil
   call.state = "canceled"
+  if call.started_at_hr then
+    call.time_taken_s = (uv.hrtime() - call.started_at_hr) / 1e9
+  end
   call.completed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
   self:emit("call_state_changed", vim.deepcopy(call))
 end

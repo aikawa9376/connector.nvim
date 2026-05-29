@@ -1,3 +1,5 @@
+local buffer_line = require("connector.ui.buffer_line")
+local candies_module = require("connector.ui.candies")
 local util = require("connector.util")
 
 local DrawerUI = {}
@@ -13,6 +15,7 @@ function DrawerUI:new(handler, editor, result, config)
     result = result,
     config = config,
     bufnr = bufnr,
+    ns = vim.api.nvim_create_namespace("connector-drawer"),
     window = nil,
     line_map = {},
     expanded = {
@@ -20,6 +23,7 @@ function DrawerUI:new(handler, editor, result, config)
       ["root:scratchpads"] = true,
       ["root:help"] = true,
     },
+    candies = config.disable_candies and {} or vim.tbl_deep_extend("force", candies_module.drawer_defaults(), config.candies or {}),
   }
   setmetatable(o, self)
   self.__index = self
@@ -37,6 +41,9 @@ function DrawerUI:new(handler, editor, result, config)
   editor:register_event_listener("notes_changed", function()
     o:refresh()
   end)
+  editor:register_event_listener("current_note_changed", function()
+    o:refresh()
+  end)
 
   return o
 end
@@ -44,6 +51,9 @@ end
 function DrawerUI:show(winid)
   self.window = winid
   vim.api.nvim_win_set_buf(winid, self.bufnr)
+  vim.wo[winid].wrap = false
+  vim.wo[winid].number = false
+  vim.wo[winid].relativenumber = false
   self:refresh()
 end
 
@@ -51,8 +61,72 @@ function DrawerUI:node_at_cursor()
   return self.line_map[vim.api.nvim_win_get_cursor(0)[1]]
 end
 
-function DrawerUI:add_line(lines, depth, label, node)
-  table.insert(lines, string.rep("  ", depth) .. label)
+function DrawerUI:candy_for_kind(kind, expandable, materialization, active)
+  if kind == "source" then
+    return candies_module.get(self.candies, "source")
+  elseif kind == "connection" then
+    if active then
+      return candies_module.get(self.candies, "connection_active", "connection")
+    end
+    return candies_module.get(self.candies, "connection")
+  elseif kind == "database" then
+    return candies_module.get(self.candies, "database_switch")
+  elseif kind == "schema" or kind == "dbroot" then
+    return candies_module.get(self.candies, "schema")
+  elseif kind == "table" then
+    if materialization == "view" then
+      return candies_module.get(self.candies, "view")
+    end
+    return candies_module.get(self.candies, "table")
+  elseif kind == "column" then
+    return candies_module.get(self.candies, "column")
+  elseif kind == "add_connection" or kind == "scratchpad_new" then
+    return candies_module.get(self.candies, "add")
+  elseif kind == "edit_source" then
+    return candies_module.get(self.candies, "edit")
+  elseif kind == "scratchpad" then
+    return candies_module.get(self.candies, "note")
+  elseif kind == "help" then
+    return candies_module.get(self.candies, "help")
+  elseif kind == "root" then
+    return candies_module.get(self.candies, expandable and "none_dir" or "none")
+  end
+  return candies_module.get(self.candies, expandable and "none_dir" or "none")
+end
+
+function DrawerUI:add_line(lines, depth, label, node, opts)
+  opts = opts or {}
+  local builder = buffer_line.new_builder()
+  buffer_line.append(builder, string.rep("  ", depth))
+
+  if self.config.disable_candies then
+    local prefix = opts.expandable and ((self:is_expanded(node.key) and "▾ " or "▸ ")) or ""
+    local active = opts.active and "● " or ""
+    buffer_line.append(builder, prefix .. active .. label)
+  else
+    if opts.expandable then
+      local chevron_key = self:is_expanded(node.key) and "node_expanded" or "node_closed"
+      local chevron = candies_module.get(self.candies, chevron_key)
+      buffer_line.append(builder, (chevron.icon or "▸") .. " ", chevron.icon_highlight)
+    else
+      buffer_line.append(builder, "  ")
+    end
+
+    local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active)
+    if candy.icon and candy.icon ~= "" then
+      buffer_line.append(builder, " " .. candy.icon .. " ", candy.icon_highlight)
+    elseif candy.icon == " " then
+      buffer_line.append(builder, "   ")
+    end
+
+    local text_hl = candy.text_highlight
+    if opts.active and candy.icon_highlight ~= "" then
+      text_hl = candy.icon_highlight
+    end
+    buffer_line.append(builder, label, text_hl ~= "" and text_hl or nil)
+  end
+
+  table.insert(lines, builder)
   self.line_map[#lines] = node
 end
 
@@ -112,46 +186,47 @@ end
 function DrawerUI:refresh()
   self.line_map = {}
   local lines = {}
+  local current_note = self.editor:get_current_note()
 
-  self:add_line(lines, 0, (self:is_expanded("root:connections") and "▾ " or "▸ ") .. "Connections", {
+  self:add_line(lines, 0, "Connections", {
     kind = "root",
     key = "root:connections",
-  })
+  }, { expandable = true })
   if self:is_expanded("root:connections") then
     for _, source in ipairs(self.handler:get_sources()) do
       local source_key = "source:" .. source:name()
-      self:add_line(lines, 1, (self:is_expanded(source_key) and "▾ " or "▸ ") .. source:name(), {
+      self:add_line(lines, 1, source:name(), {
         kind = "source",
         key = source_key,
         source_id = source:name(),
-      })
+      }, { expandable = true })
       if self:is_expanded(source_key) then
         for _, conn in ipairs(self.handler:source_get_connections(source:name())) do
           local active = self.handler:get_current_connection()
           local is_active = active and active.id == conn.id
           local conn_key = "connection:" .. conn.id
-          self:add_line(lines, 2, (self:is_expanded(conn_key) and "▾ " or "▸ ") .. (is_active and "* " or "") .. conn.name, {
+          self:add_line(lines, 2, conn.name, {
             kind = "connection",
             key = conn_key,
             connection_id = conn.id,
             source_id = source:name(),
-          })
+          }, { expandable = true, active = is_active })
           if self:is_expanded(conn_key) then
             local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
             if ok_dbs and (current_db ~= "" or #(databases or {}) > 0) then
               local db_root_key = "dbroot:" .. conn.id
-              self:add_line(lines, 3, (self:is_expanded(db_root_key) and "▾ " or "▸ ") .. "Databases", {
+              self:add_line(lines, 3, "Databases", {
                 kind = "dbroot",
                 key = db_root_key,
-              })
+              }, { expandable = true })
               if self:is_expanded(db_root_key) then
                 for _, database in ipairs(databases or {}) do
-                  self:add_line(lines, 4, (database == current_db and "* " or "") .. database, {
+                  self:add_line(lines, 4, database, {
                     kind = "database",
                     key = ("database:%s:%s"):format(conn.id, database),
                     connection_id = conn.id,
                     database = database,
-                  })
+                  }, { active = database == current_db })
                 end
               end
             end
@@ -166,24 +241,24 @@ function DrawerUI:refresh()
               end
               for _, schema in ipairs(util.table_keys_sorted(grouped)) do
                 local schema_key = ("schema:%s:%s"):format(conn.id, schema)
-                self:add_line(lines, 3, (self:is_expanded(schema_key) and "▾ " or "▸ ") .. (schema ~= "" and schema or "(default)"), {
+                self:add_line(lines, 3, schema ~= "" and schema or "(default)", {
                   kind = "schema",
                   key = schema_key,
-                })
+                }, { expandable = true })
                 if self:is_expanded(schema_key) then
                   table.sort(grouped[schema], function(left, right)
                     return left.name < right.name
                   end)
                   for _, item in ipairs(grouped[schema]) do
                     local table_key = ("table:%s:%s:%s"):format(conn.id, schema, item.name)
-                    self:add_line(lines, 4, (self:is_expanded(table_key) and "▾ " or "▸ ") .. item.name .. " [" .. item.materialization .. "]", {
+                    self:add_line(lines, 4, item.name .. " [" .. item.materialization .. "]", {
                       kind = "table",
                       key = table_key,
                       connection_id = conn.id,
                       schema = schema ~= "" and schema or nil,
                       table = item.name,
                       materialization = item.materialization,
-                    })
+                    }, { expandable = true })
                     if self:is_expanded(table_key) then
                       local helpers = self.handler:connection_get_helpers(conn.id, {
                         table = item.name,
@@ -205,7 +280,7 @@ function DrawerUI:refresh()
                       })
                       if ok_columns then
                         for _, column in ipairs(cols) do
-                          self:add_line(lines, 5, ("%s :: %s"):format(column.name, column.data_type), {
+                          self:add_line(lines, 5, ("%s [%s]"):format(column.name, column.data_type), {
                             kind = "column",
                             key = ("column:%s:%s"):format(item.name, column.name),
                           })
@@ -220,14 +295,14 @@ function DrawerUI:refresh()
         end
 
         if type(source.create) == "function" then
-          self:add_line(lines, 2, "+ add connection", {
+          self:add_line(lines, 2, "add connection", {
             kind = "add_connection",
             key = "add:" .. source:name(),
             source_id = source:name(),
           })
         end
         if type(source.file) == "function" then
-          self:add_line(lines, 2, "~ edit source file", {
+          self:add_line(lines, 2, "edit source file", {
             kind = "edit_source",
             key = "edit:" .. source:name(),
             file = source:file(),
@@ -237,12 +312,12 @@ function DrawerUI:refresh()
     end
   end
 
-  self:add_line(lines, 0, (self:is_expanded("root:scratchpads") and "▾ " or "▸ ") .. "Scratchpads", {
+  self:add_line(lines, 0, "Scratchpads", {
     kind = "root",
     key = "root:scratchpads",
-  })
+  }, { expandable = true })
   if self:is_expanded("root:scratchpads") then
-    self:add_line(lines, 1, "+ new", {
+    self:add_line(lines, 1, "new", {
       kind = "scratchpad_new",
       key = "scratchpad:new",
     })
@@ -251,15 +326,15 @@ function DrawerUI:refresh()
         kind = "scratchpad",
         key = "scratchpad:" .. note.id,
         note_id = note.id,
-      })
+      }, { active = current_note and current_note.id == note.id })
     end
   end
 
   if not self.config.disable_help then
-    self:add_line(lines, 0, (self:is_expanded("root:help") and "▾ " or "▸ ") .. "Help", {
-      kind = "root",
+    self:add_line(lines, 0, "Help", {
+      kind = "help",
       key = "root:help",
-    })
+    }, { expandable = true })
     if self:is_expanded("root:help") then
       self:add_line(lines, 1, "<CR>: open/select/insert", { kind = "help", key = "help:1" })
       self:add_line(lines, 1, "o: toggle node", { kind = "help", key = "help:2" })
@@ -269,7 +344,7 @@ function DrawerUI:refresh()
     end
   end
 
-  util.buf_set_lines(self.bufnr, lines)
+  buffer_line.render(self.bufnr, self.ns, lines)
 end
 
 function DrawerUI:do_action(action)
@@ -372,4 +447,3 @@ function DrawerUI:do_action(action)
 end
 
 return DrawerUI
-

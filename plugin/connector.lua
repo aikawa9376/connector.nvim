@@ -58,6 +58,8 @@ vim.api.nvim_create_user_command(COMMAND_NAME, function(opts)
   fn(args)
 end, {
   nargs = "*",
+  range = true,
+  bang = true,
   complete = function(_, cmdline)
     local args = split_args(cmdline:gsub("^" .. COMMAND_NAME, ""))
     if #args <= 1 then

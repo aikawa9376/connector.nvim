@@ -3,6 +3,14 @@ local util = require("connector.util")
 
 local ResultUI = {}
 
+local function truncate_query(query, max_len)
+  query = vim.trim(query:gsub("%s+", " "))
+  if #query <= max_len then
+    return query
+  end
+  return query:sub(1, max_len - 3) .. "..."
+end
+
 function ResultUI:new(handler, config)
   local bufnr = vim.api.nvim_create_buf(false, true)
   vim.bo[bufnr].bufhidden = "hide"
@@ -51,24 +59,65 @@ end
 function ResultUI:show(winid)
   self.window = winid
   vim.api.nvim_win_set_buf(winid, self.bufnr)
+  vim.wo[winid].wrap = false
+  vim.wo[winid].number = false
+  vim.wo[winid].relativenumber = false
+  self:apply_highlight()
   self:refresh()
+end
+
+function ResultUI:apply_highlight()
+  if not self.window or not vim.api.nvim_win_is_valid(self.window) then
+    return
+  end
+  local current_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_set_current_win(self.window)
+  vim.cmd([[match NonText /^\s*\d\+\|─\|│\|┼/]])
+  if current_win ~= self.window and vim.api.nvim_win_is_valid(current_win) then
+    vim.api.nvim_set_current_win(current_win)
+  end
+end
+
+function ResultUI:update_winbar(call, total_rows)
+  if not self.window or not vim.api.nvim_win_is_valid(self.window) then
+    return
+  end
+
+  if not call then
+    vim.api.nvim_win_set_option(self.window, "winbar", "Results")
+    return
+  end
+
+  if call.state ~= "archived" or not call.result then
+    local query = truncate_query(call.query or "", 72)
+    local suffix = call.state == "executing" and "Executing..." or call.state
+    vim.api.nvim_win_set_option(self.window, "winbar", ("%s  %s"):format(query, suffix))
+    return
+  end
+
+  local total_pages = math.max(1, math.ceil(total_rows / math.max(1, self.config.page_size)))
+  local query = truncate_query(call.query or "", 56)
+  local seconds = call.time_taken_s or 0
+  local right = string.format("Took %.3fs", seconds)
+  if call.result.editable then
+    right = "editable  " .. right
+  end
+  local winbar = string.format("%s  %d/%d (%d)%%=%s", query, self.page, total_pages, total_rows, right)
+  vim.api.nvim_win_set_option(self.window, "winbar", winbar)
 end
 
 function ResultUI:render_waiting(call)
   self:close_editor()
-  local lines = {
-    ("Call: %s"):format(call.id),
-    ("State: %s"):format(call.state),
-  }
+  local lines = {}
   if call.error then
-    table.insert(lines, "Error: " .. call.error)
+    table.insert(lines, call.error)
   else
-    table.insert(lines, "")
     table.insert(lines, call.query)
   end
   util.buf_set_lines(self.bufnr, lines)
   self.line_map = {}
   self.cell_map = {}
+  self:update_winbar(call, 0)
 end
 
 function ResultUI:refresh()
@@ -82,6 +131,7 @@ function ResultUI:refresh()
     })
     self.line_map = {}
     self.cell_map = {}
+    self:update_winbar(nil, 0)
     return
   end
 
@@ -98,25 +148,11 @@ function ResultUI:refresh()
   local to = math.min(from + page_size, #rows)
 
   local body, line_map, cell_map = format.to_table_lines(call.result, from, to)
-  local lines = {
-    ("Connection: %s"):format(call.connection_id),
-    ("Page %d/%d | Rows %d-%d of %d"):format(self.page, total_pages, math.min(from + 1, #rows), to, #rows),
-  }
-  if call.result.editable then
-    table.insert(lines, "Editable: <CR>/i edit cell, primary-key columns are read-only, type NULL for nullable cells.")
-  end
-  table.insert(lines, "")
-  local offset = #lines
-  vim.list_extend(lines, body)
-  self.line_map = {}
-  self.cell_map = {}
-  for line, row_index in pairs(line_map) do
-    self.line_map[line + offset] = row_index
-  end
-  for line, cells in pairs(cell_map) do
-    self.cell_map[line + offset] = cells
-  end
-  util.buf_set_lines(self.bufnr, lines)
+  self.line_map = line_map
+  self.cell_map = cell_map
+  util.buf_set_lines(self.bufnr, body)
+  self:update_winbar(call, #rows)
+  self:apply_highlight()
 end
 
 function ResultUI:page_current()
@@ -230,7 +266,7 @@ function ResultUI:edit_cell()
   self:close_editor()
 
   local editor_buf = vim.api.nvim_create_buf(false, true)
-  local width = math.max(cell.width + 2, #original + 1, 8)
+  local width = math.max(cell.width + 2, util.display_width(original) + 1, 8)
   vim.api.nvim_buf_set_lines(editor_buf, 0, -1, false, { original })
   vim.bo[editor_buf].bufhidden = "wipe"
 

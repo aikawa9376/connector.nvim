@@ -46,6 +46,9 @@ function EditorUI:create_buf(file)
   vim.fn.bufload(bufnr)
   vim.bo[bufnr].filetype = "sql"
   vim.bo[bufnr].bufhidden = "hide"
+  util.apply_buffer_mappings(bufnr, self.config.mappings, function(action)
+    self:do_action(action)
+  end)
   return bufnr
 end
 
@@ -185,6 +188,7 @@ function EditorUI:set_current_note(id)
   if self.window and vim.api.nvim_win_is_valid(self.window) then
     vim.api.nvim_win_set_buf(self.window, note.bufnr)
   end
+  self:emit("current_note_changed", note)
 end
 
 function EditorUI:ensure_default_note()
