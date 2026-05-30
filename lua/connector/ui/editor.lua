@@ -50,6 +50,10 @@ function EditorUI:create_buf(file)
   util.apply_buffer_mappings(bufnr, self.config.mappings, function(action)
     self:do_action(action)
   end)
+
+  -- Simple omnifunc for table-name completion
+  vim.bo[bufnr].omnifunc = 'v:lua.require("connector.completion").omnifunc'
+
   return bufnr
 end
 
@@ -325,6 +329,63 @@ function EditorUI:do_action(action)
   elseif action == "run_under_cursor" then
     local line = vim.api.nvim_get_current_line()
     self:run_query(line)
+  elseif action == "run_in_float" then
+    local lines = get_visual_lines(bufnr)
+    local query = nil
+    if lines then
+      query = table.concat(lines, "\n")
+    else
+      query = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+    end
+
+    local conn = self.handler:get_current_connection()
+    if not conn then
+      util.notify("no active connection selected", vim.log.levels.ERROR)
+      return
+    end
+
+    -- Create ephemeral buffer and float window
+    local ui = vim.api.nvim_list_uis()[1]
+    local width = math.max(40, math.min(ui.width - 8, math.floor(ui.width * 0.85)))
+    local height = math.max(10, math.min(ui.height - 4, math.floor(ui.height * 0.85)))
+    local col = math.floor((ui.width - width) / 2)
+    local row = math.floor((ui.height - height) / 2)
+    local res_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[res_buf].bufhidden = "wipe"
+    vim.bo[res_buf].filetype = "sql"
+    vim.api.nvim_buf_set_option(res_buf, "modifiable", true)
+    vim.api.nvim_buf_set_lines(res_buf, 0, -1, false, { "Running query..." })
+    vim.api.nvim_buf_set_option(res_buf, "modifiable", false)
+    local winid = vim.api.nvim_open_win(res_buf, true, {
+      relative = "editor",
+      width = width,
+      height = height,
+      col = col,
+      row = row,
+      border = "rounded",
+      style = "minimal",
+      zindex = 150,
+    })
+    vim.keymap.set("n", "q", function() pcall(vim.api.nvim_win_close, winid, true) end, { buffer = res_buf, silent = true })
+
+    -- Register listener to write results when call is completed
+    local function on_call_state(payload)
+      if not payload or not payload.id then return end
+      if payload.state == "archived" then
+        pcall(function()
+          self.handler:call_store_result(payload.id, "table", "buffer", { extra_arg = res_buf })
+        end)
+      end
+    end
+    self.handler:register_event_listener("call_state_changed", on_call_state)
+
+    self.handler:connection_execute(conn.id, query, function(call)
+      if call and call.state == "archived" then
+        pcall(function()
+          self.handler:call_store_result(call.id, "table", "buffer", { extra_arg = res_buf })
+        end)
+      end
+    end)
   end
 end
 

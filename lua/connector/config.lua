@@ -53,8 +53,11 @@ function config.default()
         { key = "BB", mode = "v", action = "run_selection" },
         { key = "BB", mode = "n", action = "run_file" },
         { key = "<CR>", mode = "n", action = "run_under_cursor" },
+        { key = "<C-CR>", mode = "n", action = "run_in_float" },
+        { key = "<C-CR>", mode = "v", action = "run_in_float" },
       },
     },
+
     call_log = {
       disable_candies = false,
       candies = require("connector.ui.candies").call_log_defaults(),
