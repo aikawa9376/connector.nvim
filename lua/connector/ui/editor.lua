@@ -2,7 +2,7 @@ local util = require("connector.util")
 
 local EditorUI = {}
 
-function EditorUI:new(handler, result, config)
+function EditorUI:new(handler, result, config, state_helpers)
   local o = {
     handler = handler,
     result = result,
@@ -12,6 +12,7 @@ function EditorUI:new(handler, result, config)
     note_order = {},
     current_note_id = nil,
     window = nil,
+    state_helpers = state_helpers or {},
   }
   setmetatable(o, self)
   self.__index = self
@@ -55,8 +56,10 @@ end
 function EditorUI:load_notes()
   local paths = vim.fn.globpath(self.config.directory, "**/*.sql", false, true)
   table.sort(paths)
+  local root_len = #self.config.directory
   for _, file in ipairs(paths) do
-    local namespace = vim.fs.basename(vim.fs.dirname(file))
+    local rel_dir = vim.fs.dirname(file):sub(root_len + 2)
+    local namespace = rel_dir ~= "" and rel_dir or "global"
     local ns = self:ensure_namespace(namespace)
     local id = util.random_id("note")
     local name = vim.fs.basename(file):gsub("%.sql$", "")
@@ -127,7 +130,23 @@ function EditorUI:namespace_create_note(id, name)
   ns.notes[note_id] = note
   self.current_note_id = note_id
   self:emit("notes_changed", note)
+
+  -- Register project -> namespace mapping for the project currently in context
+  local proj = self.state_helpers and self.state_helpers.get_current_project and self.state_helpers.get_current_project()
+  if not proj then
+    proj = util.resolve_project()
+  end
+  if proj and proj.root then
+    util.set_project_mapping(proj.root, id)
+  end
+
   return note_id
+end
+
+function EditorUI:get_namespaces()
+  local ids = vim.tbl_keys(self.namespaces)
+  table.sort(ids)
+  return ids
 end
 
 function EditorUI:namespace_get_notes(id)
@@ -192,10 +211,71 @@ function EditorUI:set_current_note(id)
 end
 
 function EditorUI:ensure_default_note()
-  if self.current_note_id then
+  -- Prefer the saved state project (which may include root info) when available,
+  -- otherwise fall back to resolving from the current buffer.
+  local state_project = self.state_helpers and self.state_helpers.get_current_project and self.state_helpers.get_current_project()
+  local resolved_project = util.resolve_project()
+  local project = state_project or resolved_project
+
+  local ns = "global"
+  if project then
+    local branch = util.get_git_branch(project.root) or "main"
+    ns = project.name .. "/" .. branch
+
+    -- If project has a root, prefer any persisted mapping for that root
+    if project.root then
+      local mapped = util.get_project_mapping(project.root)
+      if mapped and self.namespaces[mapped] then
+        ns = mapped
+      else
+        -- Look for existing namespaces that match the project name (e.g., after rename)
+        local candidates = {}
+        for _, name in ipairs(self:get_namespaces()) do
+          if name:match("^" .. project.name .. "/") then
+            table.insert(candidates, name)
+          end
+        end
+        if #candidates > 0 then
+          local preferred = nil
+          for _, c in ipairs(candidates) do
+            if c == project.name .. "/" .. branch then preferred = c; break end
+          end
+          preferred = preferred or candidates[1]
+          ns = preferred
+          util.set_project_mapping(project.root, preferred)
+        end
+      end
+    end
+  end
+
+  local notes = self:namespace_get_notes(ns)
+  if #notes == 0 then
+    local note_id = self:namespace_create_note(ns, "default")
+    self:set_current_note(note_id)
     return
   end
-  self:namespace_create_note("global", "scratchpad")
+
+  local current = self:get_current_note()
+  -- If there's no current note or it's global, pick the project note
+  if not current or current.namespace == "global" then
+    self:set_current_note(notes[1].id)
+    return
+  end
+
+  -- If the current note belongs to a different project than the resolved project,
+  -- prefer the resolved project note when available.
+  if project then
+    local current_project_name = vim.split(current.namespace, "/")[1]
+    if current_project_name ~= project.name then
+      self:set_current_note(notes[1].id)
+      return
+    end
+  end
+
+  -- Fallback to selecting a note if none selected
+  if not self.current_note_id then
+    self:set_current_note(notes[1].id)
+  end
 end
 
 function EditorUI:show(winid)
@@ -248,5 +328,63 @@ function EditorUI:do_action(action)
   end
 end
 
-return EditorUI
 
+
+
+function EditorUI:namespace_rename(id, new_id)
+  local old_dir = self:namespace_dir(id)
+  local new_dir = self:namespace_dir(new_id)
+  if vim.fn.isdirectory(old_dir) == 0 then error("directory not found: " .. id) end
+
+  -- Snapshot existing notes under the old namespace so buffers can be preserved
+  local old_ns = self.namespaces[id]
+  if not old_ns then error("namespace not found: " .. id) end
+  local snapshot = {}
+  for _, note_id in ipairs(old_ns.order) do
+    local note = old_ns.notes[note_id]
+    table.insert(snapshot, { id = note_id, name = note.name, bufnr = note.bufnr, basename = vim.fs.basename(note.file) })
+  end
+
+  -- Ensure parent directory for the new namespace exists, then perform filesystem rename
+  local parent_dir = vim.fs.dirname(new_dir)
+  util.ensure_dir(parent_dir)
+  local ok, err = pcall(os.rename, old_dir, new_dir)
+  if not ok then error("failed to rename namespace directory: " .. tostring(err)) end
+
+  -- Update project mappings: any root mapping that pointed to the old namespace should now point to the new one
+  local mappings = util.read_project_mappings()
+  local changed = false
+  for root, ns in pairs(mappings) do
+    if ns == id then
+      mappings[root] = new_id
+      changed = true
+    end
+  end
+  if changed then
+    util.write_project_mappings(mappings)
+  end
+
+  -- Ensure target namespace exists and merge notes while preserving buffers
+  local target_ns = self:ensure_namespace(new_id)
+  for _, info in ipairs(snapshot) do
+    local note = old_ns.notes[info.id]
+    if note then
+      local new_file = util.joinpath(new_dir, info.basename)
+      note.namespace = new_id
+      note.file = new_file
+      if vim.api.nvim_buf_is_valid(note.bufnr) then
+        pcall(vim.api.nvim_buf_set_name, note.bufnr, new_file)
+      end
+      table.insert(target_ns.order, info.id)
+      target_ns.notes[info.id] = note
+    end
+  end
+
+  -- Remove old namespace entry
+  self.namespaces[id] = nil
+
+  -- Notify listeners that notes changed
+  self:emit("notes_changed")
+end
+
+return EditorUI

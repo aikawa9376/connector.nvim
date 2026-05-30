@@ -5,7 +5,7 @@ local util = require("connector.util")
 
 local DrawerUI = {}
 
-function DrawerUI:new(handler, editor, result, config)
+function DrawerUI:new(handler, editor, result, config, state_helpers)
   local bufnr = vim.api.nvim_create_buf(false, true)
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].filetype = "connector-drawer"
@@ -24,6 +24,9 @@ function DrawerUI:new(handler, editor, result, config)
       ["root:scratchpads"] = true,
     },
     candies = config.disable_candies and {} or vim.tbl_deep_extend("force", candies_module.drawer_defaults(), config.candies or {}),
+    state_helpers = state_helpers or {},
+    -- remember last active namespace to avoid repeatedly reopening the same note
+    last_active_namespace = nil,
   }
   setmetatable(o, self)
   self.__index = self
@@ -78,7 +81,7 @@ function DrawerUI:node_at_cursor()
   return self.line_map[vim.api.nvim_win_get_cursor(0)[1]]
 end
 
-function DrawerUI:candy_for_kind(kind, expandable, materialization, active)
+function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts)
   if kind == "source" then
     return candies_module.get(self.candies, "source")
   elseif kind == "connection" then
@@ -103,6 +106,14 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active)
     return candies_module.get(self.candies, "edit")
   elseif kind == "scratchpad" then
     return candies_module.get(self.candies, "note")
+    elseif kind == "scratchpad_dir" then
+    if opts and opts.is_active_project then
+      local candy = vim.deepcopy(candies_module.get(self.candies, "connection_active", "source"))
+      candy.icon = "" -- Open folder icon
+      return candy
+    end
+    -- Normal folders and non-active project folders look the same (no color)
+    return candies_module.get(self.candies, expandable and "none_dir" or "none")
   elseif kind == "help" then
     return candies_module.get(self.candies, "help")
   elseif kind == "root" then
@@ -120,7 +131,7 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
     local active = opts.active and "● " or ""
     buffer_line.append(builder, active .. label)
   else
-    local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active)
+    local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active, opts)
     if candy.icon and candy.icon ~= "" then
       buffer_line.append(builder, candy.icon .. " ", candy.icon_highlight)
     elseif candy.icon == " " then
@@ -345,22 +356,154 @@ function DrawerUI:refresh()
     end
   end
 
-  self:add_line(lines, 0, "Scratchpads", {
+        self:add_line(lines, 0, "Scratchpads", {
     kind = "root",
     key = "root:scratchpads",
   }, { expandable = true })
   if self:is_expanded("root:scratchpads") then
-    self:add_line(lines, 1, "new", {
-      kind = "scratchpad_new",
-      key = "scratchpad:new",
-    })
-    for _, note in ipairs(self.editor:namespace_get_notes("global")) do
-      self:add_line(lines, 1, note.name, {
-        kind = "scratchpad",
-        key = "scratchpad:" .. note.id,
-        note_id = note.id,
-      }, { active = current_note and current_note.id == note.id })
+                    local all_namespaces = self.editor:get_namespaces()
+    local current_note = self.editor:get_current_note()
+
+    -- Resolve project immediately from the current buffer so the drawer doesn't rely solely on external state updates.
+    local buffer_project = util.resolve_project()
+    local state_project = self.state_helpers.get_current_project and self.state_helpers.get_current_project() or nil
+
+    local current_project = nil
+    if buffer_project then
+      -- If the buffer is a scratchpad, prefer the richer state_project (with root info) when names match.
+      if buffer_project.is_scratchpad and state_project and state_project.name == buffer_project.name then
+        current_project = state_project
+      else
+        current_project = buffer_project
+      end
+    else
+      current_project = state_project
     end
+
+    -- Determine the full namespace to expand (prefer persisted mapping when available)
+    local active_namespace = nil
+    local active_project_name = nil
+    if current_project then
+      -- Try persisted mapping first
+      if current_project.root and util.get_project_mapping then
+        local mapped_ns = util.get_project_mapping(current_project.root)
+        if mapped_ns and vim.tbl_contains(self.editor:get_namespaces(), mapped_ns) then
+          active_namespace = mapped_ns
+        end
+      end
+
+      if not active_namespace then
+        -- Prefer exact branch match when possible, otherwise try to find any namespace matching the project name
+        local branch = nil
+        if current_project.root then
+          branch = util.get_git_branch(current_project.root) or "main"
+        end
+        local ns_list = self.editor:get_namespaces()
+        if branch then
+          local desired = current_project.name .. "/" .. branch
+          for _, n in ipairs(ns_list) do
+            if n == desired then
+              active_namespace = n
+              break
+            end
+          end
+        end
+
+        -- If still not found, search for any namespace that starts with the project name
+        if not active_namespace then
+          local prefix = current_project.name .. "/"
+          local candidate = nil
+          for _, n in ipairs(ns_list) do
+            if n:sub(1, #prefix) == prefix then
+              candidate = candidate or n
+            end
+          end
+          if candidate then
+            active_namespace = candidate
+            -- persist mapping for next time
+            if current_project.root then
+              util.set_project_mapping(current_project.root, candidate)
+            end
+          else
+            -- fallback to constructed namespace
+            if current_project.root then
+              active_namespace = current_project.name .. "/" .. (branch or "main")
+            else
+              active_namespace = current_project.name
+            end
+          end
+        end
+      end
+
+      active_project_name = vim.split(active_namespace, "/")[1]
+    end
+
+    -- If a scratchpad note is focused (and it's the focused buffer), use its namespace as an explicit override.
+    local current_buf = vim.api.nvim_get_current_buf()
+    if current_note and current_note.namespace ~= "global" and current_note.bufnr and current_note.bufnr == current_buf then
+      active_namespace = current_note.namespace
+      active_project_name = vim.split(active_namespace, "/")[1]
+    end
+
+    -- Auto-expand current project path (use full namespace if available)
+    if active_namespace then
+      local parts = vim.split(active_namespace, "/")
+      for i=1,#parts do
+        self.expanded["scratchpad_ns:" .. table.concat(parts, "/", 1, i)] = true
+      end
+    end
+
+    local tree = {}
+    for _, ns_id in ipairs(all_namespaces) do
+      local parts = vim.split(ns_id, "/")
+      local project_name = parts[1]
+      
+      if not self.config.project_filter_only_current or project_name == active_project_name or project_name == "global" then
+        local curr = tree
+        for i, part in ipairs(parts) do
+          curr[part] = curr[part] or { nodes = {}, full_path = table.concat(parts, "/", 1, i), is_project = (i == 1 and part ~= "global") }
+          curr = curr[part].nodes
+        end
+      end
+    end
+
+    local function render_tree(nodes, depth)
+      local sorted_keys = vim.tbl_keys(nodes)
+      table.sort(sorted_keys, function(a, b)
+        if a == "global" then return true end
+        if b == "global" then return false end
+        return a < b
+      end)
+      for _, key in ipairs(sorted_keys) do
+        local data = nodes[key]
+        local ns_key = "scratchpad_ns:" .. data.full_path
+        local is_active = data.is_project and (key == active_project_name)
+
+        self:add_line(lines, depth, key, {
+          kind = "scratchpad_dir",
+          key = ns_key,
+          namespace = data.full_path,
+        }, { 
+          expandable = true, 
+          is_project = data.is_project,
+          is_active_project = is_active
+        })
+
+        if self:is_expanded(ns_key) then
+          render_tree(data.nodes, depth + 1)
+          for _, note in ipairs(self.editor:namespace_get_notes(data.full_path)) do
+            self:add_line(lines, depth + 1, note.name, {
+              kind = "scratchpad",
+              key = "scratchpad:" .. note.id,
+              note_id = note.id,
+              namespace = data.full_path,
+            }, { active = current_note and current_note.id == note.id })
+          end
+        end
+      end
+    end
+    render_tree(tree, 1)
+
   end
 
   if not self.config.disable_help then
@@ -378,6 +521,39 @@ function DrawerUI:refresh()
   end
 
   buffer_line.render(self.bufnr, self.ns, lines)
+
+  -- Move cursor to active project directory so the drawer's visual selection follows the project
+  if self.window and vim.api.nvim_win_is_valid(self.window) and active_project_name then
+    for i = 1, #lines do
+      local node = self.line_map[i]
+      if node and node.kind == "scratchpad_dir" then
+        local proj = vim.split(node.namespace, "/")[1]
+        if proj == active_project_name then
+          -- move cursor
+          pcall(vim.api.nvim_win_set_cursor, self.window, { i, 0 })
+
+          -- If we've switched active project namespace, open the project's first scratchpad note in the editor
+          local ns = node.namespace
+          if ns and ns ~= self.last_active_namespace then
+            self.last_active_namespace = ns
+            if self.editor then
+              local notes = self.editor:namespace_get_notes(ns)
+              if notes and #notes > 0 then
+                local cur = self.editor:get_current_note()
+                if not cur or cur.namespace ~= ns then
+                  pcall(function()
+                    self.editor:set_current_note(notes[1].id)
+                  end)
+                end
+              end
+            end
+          end
+
+          break
+        end
+      end
+    end
+  end
 end
 
 function DrawerUI:do_action(action)
@@ -396,6 +572,28 @@ function DrawerUI:do_action(action)
       self:toggle_node(node.key)
       self:refresh()
     end
+    return
+  end
+
+    if action == "action_toggle_filter" then
+    self.config.project_filter_only_current = not self.config.project_filter_only_current
+    self:refresh()
+    return
+  end
+
+  if action == "action_add" then
+    local ns = "global"
+    if node.kind == "scratchpad_dir" or node.kind == "scratchpad" then
+      ns = node.namespace
+    end
+    vim.ui.input({ prompt = "New scratchpad name: " }, function(name)
+      if not name or name == "" then return end
+      local ok, note_id = pcall(self.editor.namespace_create_note, self.editor, ns, name)
+      if ok then
+        self.editor:set_current_note(note_id)
+        self:refresh()
+      end
+    end)
     return
   end
 
@@ -429,17 +627,6 @@ function DrawerUI:do_action(action)
           pcall(self.handler.source_reload, self.handler, node.source_id)
         end,
       })
-    elseif node.kind == "scratchpad_new" then
-      vim.ui.input({ prompt = "Scratchpad name: " }, function(name)
-        if not name or name == "" then
-          return
-        end
-        local ok, note_id = pcall(self.editor.namespace_create_note, self.editor, "global", name)
-        if ok then
-          self.editor:set_current_note(note_id)
-          self:refresh()
-        end
-      end)
     elseif node.kind == "scratchpad" then
       self.editor:set_current_note(node.note_id)
     end
@@ -457,14 +644,51 @@ function DrawerUI:do_action(action)
         end
       end)
     elseif node.kind == "scratchpad" then
-      vim.ui.input({ prompt = "Rename scratchpad: " }, function(name)
-        if not name or name == "" then
-          return
-        end
+      -- Prefill with the current note name
+      local note = self.editor:search_note(node.note_id)
+      local default_name = note and note.name or ""
+      vim.ui.input({ prompt = "Rename scratchpad: ", default = default_name }, function(name)
+        if not name or name == "" then return end
         local ok, err = pcall(self.editor.note_rename, self.editor, node.note_id, name)
-        if not ok then
-          util.notify(err, vim.log.levels.ERROR)
-        end
+        if not ok then util.notify(err, vim.log.levels.ERROR) end
+        self:refresh()
+      end)
+    elseif node.kind == "scratchpad_dir" then
+      -- Prefill with only the last path segment (directory name)
+      local parts = vim.split(node.namespace, "/")
+      local last = parts[#parts]
+      vim.ui.input({ prompt = "Rename directory: ", default = last }, function(new_basename)
+        if not new_basename or new_basename == "" then return end
+        -- reconstruct full namespace using the parent path
+        local parent = #parts > 1 and table.concat(parts, "/", 1, #parts - 1) or nil
+        local new_ns = parent and (parent .. "/" .. new_basename) or new_basename
+        if new_ns == node.namespace then return end
+        local ok, err = pcall(function()
+          -- Perform namespace rename in editor (preserves buffers)
+          self.editor:namespace_rename(node.namespace, new_ns)
+
+          -- Collapse other scratchpad namespaces and expand only the renamed path
+          for k, _ in pairs(self.expanded) do
+            if k:sub(1, string.len("scratchpad_ns:")) == "scratchpad_ns:" then
+              self.expanded[k] = nil
+            end
+          end
+          local new_parts = vim.split(new_ns, "/")
+          for i=1,#new_parts do
+            self.expanded["scratchpad_ns:" .. table.concat(new_parts, "/", 1, i)] = true
+          end
+
+          -- Remember last active namespace and instruct editor to show its first note
+          self.last_active_namespace = new_ns
+          local notes = self.editor:namespace_get_notes(new_ns)
+          if notes and #notes > 0 then
+            pcall(function()
+              self.editor:set_current_note(notes[1].id)
+            end)
+          end
+        end)
+        if not ok then util.notify(err, vim.log.levels.ERROR) end
+        self:refresh()
       end)
     end
     return

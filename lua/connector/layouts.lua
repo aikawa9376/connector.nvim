@@ -23,6 +23,11 @@ function layouts.Default:is_open()
 end
 
 function layouts.Default:open()
+  local state_api = require("connector.api.state")
+  local util = require("connector.util")
+  -- Capture the project for the buffer where the user invoked open so Editor uses the expected project
+  state_api.set_current_project(util.resolve_project())
+
   vim.cmd("tabnew")
   self.tabpage = vim.api.nvim_get_current_tabpage()
 

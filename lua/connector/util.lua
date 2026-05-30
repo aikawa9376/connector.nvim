@@ -64,6 +64,38 @@ function M.write_json(path, value)
   M.write_file(path, vim.json.encode(value))
 end
 
+-- Persistent project -> namespace mappings (to handle renames)
+function M.project_mappings_file()
+  return M.state_path("connector", "project_mappings.json")
+end
+
+function M.read_project_mappings()
+  return M.read_json(M.project_mappings_file(), {})
+end
+
+function M.write_project_mappings(tbl)
+  M.write_json(M.project_mappings_file(), tbl or {})
+end
+
+function M.set_project_mapping(root, namespace)
+  if not root then return end
+  local map = M.read_project_mappings()
+  map[root] = namespace
+  M.write_project_mappings(map)
+end
+
+function M.get_project_mapping(root)
+  if not root then return nil end
+  local map = M.read_project_mappings()
+  return map[root]
+end
+
+function M.remove_project_mapping(root)
+  local map = M.read_project_mappings()
+  map[root] = nil
+  M.write_project_mappings(map)
+end
+
 function M.random_id(prefix)
   prefix = prefix or "id"
   return ("%s-%x-%x"):format(prefix, uv.hrtime(), math.random(0, 0xffffff))
@@ -390,6 +422,58 @@ function M.buf_set_lines(bufnr, lines)
   vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
+end
+
+
+function M.find_project_root(path)
+  path = path or vim.api.nvim_buf_get_name(0)
+  if path == "" then path = vim.fn.getcwd() end
+  local markers = { ".git", "package.json", "Cargo.toml", "go.mod", "Makefile" }
+  local found = vim.fs.find(markers, { path = path, upward = true })[1]
+  if found then return vim.fs.dirname(found) end
+  return nil
+end
+
+function M.is_scratchpad_path(path)
+  local scratch_root = M.state_path("connector", "scratchpads")
+  return vim.startswith(path, scratch_root)
+end
+
+function M.resolve_project(path)
+  path = path or vim.api.nvim_buf_get_name(0)
+  if M.is_scratchpad_path(path) then
+    local scratch_root = M.state_path("connector", "scratchpads")
+    local relative = path:sub(#scratch_root + 2)
+    local namespace = relative:match("^([^/]+)")
+    if namespace and namespace ~= "global" then
+      return {
+        name = namespace,
+        root = nil,
+        is_scratchpad = true,
+      }
+    end
+    return nil
+  end
+
+  local root = M.find_project_root(path)
+  if not root then return nil end
+  return {
+    name = vim.fs.basename(root),
+    root = root,
+  }
+end
+
+function M.get_git_branch(path)
+  path = path or vim.api.nvim_buf_get_name(0)
+  if path == "" then path = vim.fn.getcwd() end
+  local root = M.find_project_root(path)
+  if not root then return nil end
+  local result = vim.system({ "git", "-C", root, "branch", "--show-current" }, { text = true }):wait()
+  if result.code == 0 then
+    local branch = vim.trim(result.stdout)
+    return branch ~= "" and branch or nil
+  end
+  return nil
 end
 
 return M

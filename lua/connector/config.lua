@@ -14,6 +14,7 @@ function config.default()
     },
     extra_helpers = {},
     drawer = {
+      project_filter_only_current = false,
       disable_help = false,
       disable_candies = false,
       candies = require("connector.ui.candies").drawer_defaults(),
@@ -22,6 +23,8 @@ function config.default()
         { key = "<CR>", mode = "n", action = "action_1" },
         { key = "cw", mode = "n", action = "action_2" },
         { key = "dd", mode = "n", action = "action_3" },
+        { key = "a", mode = "n", action = "action_add" },
+        { key = "f", mode = "n", action = "action_toggle_filter" },
         { key = "o", mode = "n", action = "toggle" },
       },
     },
@@ -82,7 +85,8 @@ function config.validate(cfg)
     extra_helpers = { cfg.extra_helpers, "table" },
     result = { cfg.result, "table" },
     editor = { cfg.editor, "table" },
-    drawer = { cfg.drawer, "table" },
+    drawer = {
+      project_filter_only_current = false, cfg.drawer, "table" },
     call_log = { cfg.call_log, "table" },
     window_layout = { cfg.window_layout, "table" },
   })
