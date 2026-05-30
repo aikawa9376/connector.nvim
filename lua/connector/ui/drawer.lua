@@ -186,7 +186,36 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
       schema = schema ~= "" and schema or nil,
       table = item.name,
       materialization = item.materialization,
-    })
+    }, { expandable = true })
+
+    if self:is_expanded(table_key) then
+      local ok_cols, columns = pcall(self.handler.connection_get_columns, self.handler, conn.id, {
+        table = item.name,
+        schema = schema ~= "" and schema or nil,
+        materialization = item.materialization,
+      })
+      if ok_cols then
+        for _, col in ipairs(columns) do
+          local col_label = col.name
+          if col.primary_key then
+            col_label = col_label .. " [PK]"
+          end
+          if col.data_type and col.data_type ~= "" then
+            col_label = col_label .. " (" .. col.data_type .. ")"
+          end
+          self:add_line(lines, depth + 1, col_label, {
+            kind = "column",
+            key = ("column:%s:%s:%s:%s"):format(conn.id, schema or "", item.name, col.name),
+            connection_id = conn.id,
+            schema = schema ~= "" and schema or nil,
+            table = item.name,
+            column = col.name,
+          })
+        end
+      else
+        util.notify(("Failed to load columns for %s: %s"):format(item.name, columns), vim.log.levels.ERROR)
+      end
+    end
   end
 end
 
@@ -373,6 +402,8 @@ function DrawerUI:do_action(action)
   if action == "action_1" then
     if node.kind == "table" then
       self:table_action(node)
+    elseif node.kind == "column" then
+      self:insert_query(node.column)
     elseif node.kind == "database" then
       self.handler:set_current_connection(node.connection_id)
       self.handler:connection_select_database(node.connection_id, node.database)

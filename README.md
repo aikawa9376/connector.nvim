@@ -114,13 +114,31 @@ columns stay read-only, and you can type `NULL` to clear nullable cells.
 
 ## Backend
 
-The backend lives in this repository and builds to `connector-backend`. `require("connector").install()`
+The backend lives in this repository and builds to `connector-backend`. `require("connector").install( )`
 builds it with Cargo and copies the binary into Neovim's data directory.
 
 ## TODO
-- 補完ソース
-- スクラッチのプロジェクト対応
-- 一時ウインドウ(フロート？)でのクエリ実行
-- プロジェクトごとの前回操作の保存
-- スクラッチファイルのfzf-lua検索
-- DB tabgle でfzf-lua検索 左ナビ連動
+- [ ] スクラッチのテーブル名から左ナビひらく(gdとかで定義元いくイメージ)
+- [ ] スクラッチのプロジェクト対応
+- [ ] 開いた場所からプロジェクトをなんとなく解決する
+  - [ ] プロジェクト名を左ナビにいい感じに表示する
+  - [ ] 切り替えれるようにするとなおよい
+- [ ] 補完ソース
+- [ ] 一時ウインドウ(フロート？)でのクエリ実行
+- [ ] プロジェクトごとの前回操作の保存
+- [ ] スクラッチファイルのfzf-lua検索
+- [ ] DB tabgle でfzf-lua検索 左ナビ連動
+- [ ] リフレッシュボタン
+- [ ] 結果からクエリを逆生成
+- [ ] 自動DB選択は副作用があるものはconfirmを挟む
+- [ ] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)
+  - [ ] そのための保存領域を確保(sqlite？)
+  - [ ] resultテーブルから前後のクエリに移動(これはプロジェクトを意識する)
+  - [ ] 合わせて左下の実行クエリも以前のクエリを保存する
+- [ ] クエリをビジュアル選択して複数発火するとスプリットでいい具合に表示してくれる
+  - [ ] タブでだせてカジュアルに閉じれるといいなと
+- [ ] 左ナビでカラム出したとしてvせんたくでクエリ自動生成
+- [ ] いい感じにトンネルでダンプできる機能をrustで挟んで実現したい
+
+- [ ] er図を出せちゃったりする
+- [ ] mdでいい感じにリレーション図を表示する
