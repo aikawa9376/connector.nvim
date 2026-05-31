@@ -65,6 +65,10 @@ function DrawerUI:expand_query_context(payload)
   end
   if payload.connection_id and payload.database and payload.database ~= "" then
     self.expanded[("database:%s:%s"):format(payload.connection_id, payload.database)] = true
+    if self:is_database_ignored(payload.connection_id, payload.database) then
+      self.expanded["ignored_databases"] = true
+      self.expanded["ignored_connection:" .. payload.connection_id] = true
+    end
   end
 end
 
@@ -90,7 +94,14 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts
     end
     return candies_module.get(self.candies, "connection")
   elseif kind == "database" then
+    if opts and opts.ignored then
+      return candies_module.get(self.candies, "database_ignored", "database_switch")
+    end
     return candies_module.get(self.candies, "database_switch")
+  elseif kind == "ignored_databases_group" then
+    return candies_module.get(self.candies, "ignore_group", "none_dir")
+  elseif kind == "ignored_connection_group" then
+    return candies_module.get(self.candies, "connection", "none_dir")
   elseif kind == "schema" or kind == "dbroot" then
     return candies_module.get(self.candies, "schema")
   elseif kind == "table" then
@@ -230,6 +241,33 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
   end
 end
 
+function DrawerUI:current_project()
+  return self.state_helpers.get_current_project and self.state_helpers.get_current_project() or nil
+end
+
+function DrawerUI:is_database_ignored(conn_id, database)
+  return util.is_project_database_ignored(self:current_project(), conn_id, database)
+end
+
+function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ignored)
+  local db_key = ("database:%s:%s"):format(conn.id, database)
+  self:add_line(lines, depth, database, {
+    kind = "database",
+    key = db_key,
+    connection_id = conn.id,
+    database = database,
+    ignored = ignored == true,
+  }, { expandable = true, active = database == current_db, ignored = ignored == true })
+  if self:is_expanded(db_key) then
+    local ok_structure, items = pcall(self.handler.connection_get_structure, self.handler, conn.id, database)
+    if ok_structure then
+      self:render_structure_items(lines, depth + 1, conn, items)
+    else
+      util.notify(("Failed to load tables for %s: %s"):format(database, items), vim.log.levels.ERROR)
+    end
+  end
+end
+
 function DrawerUI:table_action(node)
   self.handler:set_current_connection(node.connection_id)
   local helpers = self.handler:connection_get_helpers(node.connection_id, {
@@ -238,8 +276,13 @@ function DrawerUI:table_action(node)
     materialization = node.materialization,
   })
   local items = util.table_keys_sorted(helpers)
-  vim.ui.select(items, { prompt = "Select a query" }, function(choice)
-    if not choice then
+  table.insert(items, 1, "Query History")
+  vim.ui.select(items, { prompt = "Select a query" }, function(choice, idx)
+    if not choice or not idx then
+      return
+    end
+    if idx == 1 then
+      self:table_history_action(node)
       return
     end
     local query = helpers[choice]
@@ -256,6 +299,47 @@ function DrawerUI:table_action(node)
     if not ok then
       util.notify(err, vim.log.levels.ERROR)
     end
+  end)
+end
+
+function DrawerUI:table_history_action(node)
+  local entries = self.handler:query_history({
+    connection_id = node.connection_id,
+    table = node.table,
+    schema = node.schema,
+  })
+  if #entries == 0 then
+    entries = self.handler:query_history({
+      table = node.table,
+      schema = node.schema,
+    })
+  end
+  if #entries == 0 and node.schema then
+    entries = self.handler:query_history({
+      table = node.table,
+    })
+  end
+  if #entries == 0 then
+    util.notify(("No query history for %s."):format(node.table), vim.log.levels.INFO)
+    return
+  end
+
+  local labels = vim.tbl_map(function(entry)
+    return entry.display
+  end, entries)
+  vim.ui.select(labels, { prompt = "Select query history" }, function(_choice, idx)
+    if not idx then
+      return
+    end
+    local entry = entries[idx]
+    if not entry or not entry.query or entry.query == "" then
+      return
+    end
+    self.handler:connection_execute(entry.connection_id or node.connection_id, entry.query, function(call)
+      if call then
+        self.result:set_call(call)
+      end
+    end)
   end)
 end
 
@@ -301,17 +385,65 @@ function DrawerUI:refresh()
       end
     end
 
+    local ignored_by_connection = {}
+    local database_meta = {}
+    local function get_database_meta(conn)
+      if database_meta[conn.id] then
+        return database_meta[conn.id]
+      end
+      local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
+      local meta = {
+        ok = ok_dbs,
+        current = current_db,
+        databases = databases or {},
+        visible = {},
+        ignored = {},
+      }
+      if ok_dbs and #(databases or {}) > 0 then
+        for _, database in ipairs(databases or {}) do
+          if self:is_database_ignored(conn.id, database) then
+            table.insert(meta.ignored, database)
+          else
+            table.insert(meta.visible, database)
+          end
+        end
+      end
+      local ignored = #meta.ignored > 0 and meta.ignored or util.project_ignored_databases(self:current_project(), conn.id)
+      if #ignored > 0 then
+        ignored_by_connection[conn.id] = {
+          conn = conn,
+          current_db = current_db,
+          databases = ignored,
+        }
+      end
+      database_meta[conn.id] = meta
+      return meta
+    end
+
     for _, source in ipairs(self.handler:get_sources()) do
       local source_key = "source:" .. source:name()
+      local source_connections = self.handler:source_get_connections(source:name())
+      for _, conn in ipairs(source_connections) do
+        local ignored = util.project_ignored_databases(self:current_project(), conn.id)
+        if #ignored > 0 then
+          ignored_by_connection[conn.id] = {
+            conn = conn,
+            current_db = nil,
+            databases = ignored,
+          }
+        end
+      end
       self:add_line(lines, 1, source:name(), {
         kind = "source",
         key = source_key,
         source_id = source:name(),
       }, { expandable = true })
       if self:is_expanded(source_key) then
-        for _, conn in ipairs(self.handler:source_get_connections(source:name())) do
+        for _, conn in ipairs(source_connections) do
           local active = self.handler:get_current_connection()
           local is_active = active and active.id == conn.id
+          local db_meta = get_database_meta(conn)
+          local has_databases = db_meta.ok and #db_meta.databases > 0
           local conn_key = "connection:" .. conn.id
           self:add_line(lines, 2, conn.name, {
             kind = "connection",
@@ -320,26 +452,9 @@ function DrawerUI:refresh()
             source_id = source:name(),
           }, { expandable = true, active = is_active })
           if self:is_expanded(conn_key) then
-            local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
-            local has_databases = ok_dbs and #(databases or {}) > 0
-
             if has_databases then
-              for _, database in ipairs(databases or {}) do
-                local db_key = ("database:%s:%s"):format(conn.id, database)
-                self:add_line(lines, 3, database, {
-                  kind = "database",
-                  key = db_key,
-                  connection_id = conn.id,
-                  database = database,
-                }, { expandable = true, active = database == current_db })
-                if self:is_expanded(db_key) then
-                  local ok_structure, items = pcall(self.handler.connection_get_structure, self.handler, conn.id, database)
-                  if ok_structure then
-                    self:render_structure_items(lines, 4, conn, items)
-                  else
-                    util.notify(("Failed to load tables for %s: %s"):format(database, items), vim.log.levels.ERROR)
-                  end
-                end
+              for _, database in ipairs(db_meta.visible) do
+                self:add_database_line(lines, 3, conn, database, db_meta.current, false)
               end
             else
               local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
@@ -367,6 +482,34 @@ function DrawerUI:refresh()
         end
       end
     end
+
+    if next(ignored_by_connection) ~= nil then
+      local ignore_key = "ignored_databases"
+      self:add_line(lines, 1, "ignore", {
+        kind = "ignored_databases_group",
+        key = ignore_key,
+      }, { expandable = true, ignored = true })
+      if self:is_expanded(ignore_key) then
+        local conn_ids = vim.tbl_keys(ignored_by_connection)
+        table.sort(conn_ids, function(left, right)
+          return ignored_by_connection[left].conn.name < ignored_by_connection[right].conn.name
+        end)
+        for _, conn_id in ipairs(conn_ids) do
+          local entry = ignored_by_connection[conn_id]
+          local conn_key = "ignored_connection:" .. conn_id
+          self:add_line(lines, 2, entry.conn.name, {
+            kind = "ignored_connection_group",
+            key = conn_key,
+            connection_id = conn_id,
+          }, { expandable = true, ignored = true })
+          if self:is_expanded(conn_key) then
+            for _, database in ipairs(entry.databases) do
+              self:add_database_line(lines, 3, entry.conn, database, entry.current_db, true)
+            end
+          end
+        end
+      end
+    end
   end
 
         self:add_line(lines, 0, "Scratchpads", {
@@ -377,21 +520,8 @@ function DrawerUI:refresh()
                     local all_namespaces = self.editor:get_namespaces()
     local current_note = self.editor:get_current_note()
 
-    -- Resolve project immediately from the current buffer so the drawer doesn't rely solely on external state updates.
-    local buffer_project = util.resolve_project()
     local state_project = self.state_helpers.get_current_project and self.state_helpers.get_current_project() or nil
-
-    local current_project = nil
-    if buffer_project then
-      -- If the buffer is a scratchpad, prefer the richer state_project (with root info) when names match.
-      if buffer_project.is_scratchpad and state_project and state_project.name == buffer_project.name then
-        current_project = state_project
-      else
-        current_project = buffer_project
-      end
-    else
-      current_project = state_project
-    end
+    local current_project = state_project
 
     -- Determine the full namespace to expand (prefer persisted mapping when available)
     local active_namespace = nil
@@ -408,9 +538,7 @@ function DrawerUI:refresh()
       if not active_namespace then
         -- Prefer exact branch match when possible, otherwise try to find any namespace matching the project name
         local branch = nil
-        if current_project.root then
-          branch = util.get_git_branch(current_project.root) or "main"
-        end
+        branch = current_project.branch or (current_project.root and util.get_git_branch(current_project.root)) or nil
         local ns_list = self.editor:get_namespaces()
         if branch then
           local desired = current_project.name .. "/" .. branch
@@ -448,13 +576,6 @@ function DrawerUI:refresh()
         end
       end
 
-      active_project_name = vim.split(active_namespace, "/")[1]
-    end
-
-    -- If a scratchpad note is focused (and it's the focused buffer), use its namespace as an explicit override.
-    local current_buf = vim.api.nvim_get_current_buf()
-    if current_note and current_note.namespace ~= "global" and current_note.bufnr and current_note.bufnr == current_buf then
-      active_namespace = current_note.namespace
       active_project_name = vim.split(active_namespace, "/")[1]
     end
 
@@ -620,6 +741,9 @@ function DrawerUI:do_action(action)
       self.handler:connection_select_database(node.connection_id, node.database)
       self:toggle_node(node.key)
       self:refresh()
+    elseif node.kind == "ignored_databases_group" or node.kind == "ignored_connection_group" then
+      self:toggle_node(node.key)
+      self:refresh()
     elseif node.kind == "root" or node.kind == "source" or node.kind == "connection" then
       if node.kind == "connection" then
         self.handler:set_current_connection(node.connection_id)
@@ -713,6 +837,69 @@ function DrawerUI:do_action(action)
       if not ok then
         util.notify(err, vim.log.levels.ERROR)
       end
+    elseif node.kind == "ignored_connection_group" then
+      local project = self:current_project()
+      if not project then
+        util.notify("Open a project SQL scratchpad before restoring ignored databases.", vim.log.levels.WARN)
+        return
+      end
+      local conn_id = node.connection_id
+      local dbs = util.project_ignored_databases(project, conn_id)
+      if #dbs == 0 then
+        util.notify("No ignored databases for this connection.", vim.log.levels.INFO)
+        return
+      end
+      local last_err = nil
+      for _, db in ipairs(dbs) do
+        local ok, err = pcall(util.set_project_database_ignored, project, conn_id, db, false)
+        if not ok then last_err = err end
+      end
+      if last_err then util.notify(last_err, vim.log.levels.ERROR) end
+      util.notify(("Restored %d ignored databases for connection: %s"):format(#dbs, conn_id))
+      self:refresh()
+    elseif node.kind == "ignored_databases_group" then
+      local project = self:current_project()
+      if not project then
+        util.notify("Open a project SQL scratchpad before restoring ignored databases.", vim.log.levels.WARN)
+        return
+      end
+      local ignores = util.read_project_db_ignores()
+      local proj_key = util.project_key(project)
+      if not proj_key or not ignores[proj_key] then
+        util.notify("No ignored databases for this project.", vim.log.levels.INFO)
+        return
+      end
+      local count = 0
+      local last_err = nil
+      for conn_id, dbs in pairs(ignores[proj_key]) do
+        for db, _ in pairs(dbs) do
+          local ok, err = pcall(util.set_project_database_ignored, project, conn_id, db, false)
+          if ok then count = count + 1 else last_err = err end
+        end
+      end
+      if last_err then util.notify(last_err, vim.log.levels.ERROR) end
+      util.notify(("Restored %d ignored databases for project"):format(count))
+      self:refresh()
+    elseif node.kind == "database" then
+      local project = self:current_project()
+      if not project then
+        util.notify("Open a project SQL scratchpad before ignoring databases.", vim.log.levels.WARN)
+        return
+      end
+      local ignored = not node.ignored
+      local ok, err = pcall(util.set_project_database_ignored, project, node.connection_id, node.database, ignored)
+      if not ok then
+        util.notify(err, vim.log.levels.ERROR)
+        return
+      end
+      if ignored then
+        self.expanded["ignored_databases"] = true
+        self.expanded["ignored_connection:" .. node.connection_id] = true
+        util.notify(("Ignored database for project: %s"):format(node.database))
+      else
+        util.notify(("Restored database for project: %s"):format(node.database))
+      end
+      self:refresh()
     elseif node.kind == "scratchpad" then
       local note, namespace = self.editor:search_note(node.note_id)
       if note then
