@@ -78,6 +78,12 @@ function DrawerUI:show(winid)
   vim.wo[winid].wrap = false
   vim.wo[winid].number = false
   vim.wo[winid].relativenumber = false
+
+  -- Reapply buffer-local mappings when showing to ensure keys like 'i' are active
+  util.apply_buffer_mappings(self.bufnr, self.config.mappings, function(action)
+    self:do_action(action)
+  end)
+
   self:refresh()
 end
 
