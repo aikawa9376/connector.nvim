@@ -13,6 +13,10 @@ function config.default()
       sources.FileSource:new(vim.fs.joinpath(vim.fn.stdpath("state"), "connector", "connections.json")),
     },
     extra_helpers = {},
+    history = {
+      path = vim.fs.joinpath(vim.fn.stdpath("state"), "connector", "query_history.json"),
+      max_entries = 1000,
+    },
     drawer = {
       project_filter_only_current = false,
       disable_help = false,
@@ -22,8 +26,9 @@ function config.default()
         { key = "r", mode = "n", action = "refresh" },
         { key = "<CR>", mode = "n", action = "action_1" },
         { key = "cw", mode = "n", action = "action_2" },
-        { key = "dd", mode = "n", action = "action_3" },
+        { key = "i", mode = "n", action = "action_3" },
         { key = "a", mode = "n", action = "action_add" },
+        -- Note: 'i' used here to avoid accidental file edits from the normal 'dd' operator in JSON editors.
         { key = "f", mode = "n", action = "action_toggle_filter" },
         { key = "o", mode = "n", action = "toggle" },
       },
@@ -36,6 +41,10 @@ function config.default()
         { key = "H", mode = "n", action = "page_prev" },
         { key = "E", mode = "n", action = "page_last" },
         { key = "F", mode = "n", action = "page_first" },
+        { key = "]r", mode = "n", action = "result_newer" },
+        { key = "[r", mode = "n", action = "result_older" },
+        { key = "]q", mode = "n", action = "history_newer" },
+        { key = "[q", mode = "n", action = "history_older" },
         { key = "yaj", mode = "n", action = "yank_current_json" },
         { key = "yaj", mode = "v", action = "yank_selection_json" },
         { key = "yaJ", mode = "n", action = "yank_all_json" },
@@ -87,6 +96,7 @@ function config.validate(cfg)
   vim.validate({
     sources = { cfg.sources, "table" },
     extra_helpers = { cfg.extra_helpers, "table" },
+    history = { cfg.history, "table" },
     result = { cfg.result, "table" },
     editor = { cfg.editor, "table" },
     drawer = {
