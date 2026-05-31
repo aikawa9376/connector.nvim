@@ -325,6 +325,12 @@ end
 
 function Handler:query_history(opts)
   opts = opts or {}
+  -- Default to current project/branch when not explicitly provided so history shown
+  -- in UI (left-bottom, table history, etc.) is scoped to project context.
+  local ctx = self:query_history_context()
+  if opts.project == nil then opts.project = ctx.project end
+  if opts.branch == nil then opts.branch = ctx.branch end
+
   local entries = self.history:list(opts)
   if opts.include_missing_connections then
     return entries
