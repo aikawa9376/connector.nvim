@@ -114,4 +114,73 @@ function ui.result_do_action(action)
   state.result():do_action(action)
 end
 
+-- Prompt to pick a table (connection · schema.table) and focus it in the drawer
+function ui.drawer_pick_table()
+  local util = require("connector.util")
+  -- Ensure core/ui loaded and layout opened
+  local cfg = state.config()
+  if cfg and cfg.window_layout and not cfg.window_layout:is_open() then
+    cfg.window_layout:open()
+  end
+
+  local handler = state.handler()
+  local drawer = state.drawer()
+
+  -- Collect table entries across connections (load full structure for each connection)
+  local entries = {}
+  for conn_id, _ in pairs(handler.connections or {}) do
+    local ok, structure = pcall(handler.connection_get_structure, handler, conn_id, "", { all = true })
+    if ok and structure and #structure > 0 then
+      for _, item in ipairs(structure) do
+        table.insert(entries, {
+          connection_id = conn_id,
+          schema = item.schema and item.schema ~= "" and item.schema or nil,
+          table = item.name,
+        })
+      end
+    end
+  end
+
+  if #entries == 0 then
+    util.notify("No tables found", vim.log.levels.INFO)
+    return
+  end
+
+  local labels = vim.tbl_map(function(entry) return handler:format_table_entry_label(entry) end, entries)
+
+  vim.ui.select(labels, { prompt = "Jump to table" }, function(_choice, idx)
+    if not idx then return end
+    local entry = entries[idx]
+    if not entry then return end
+
+    -- Apply table context (sets current connection and database when needed)
+    pcall(function()
+      handler:apply_table_context(nil, entry, { notify = false })
+    end)
+
+    -- Expand the table node and refresh the drawer so the row exists
+    local table_key = ("table:%s:%s:%s"):format(entry.connection_id, entry.schema or "", entry.table)
+    drawer.expanded = drawer.expanded or {}
+    drawer.expanded[table_key] = true
+    drawer:refresh()
+
+    -- Focus drawer window and move cursor to the table line
+    if drawer.window and vim.api.nvim_win_is_valid(drawer.window) then
+      vim.api.nvim_set_current_win(drawer.window)
+      for i = 1, #drawer.line_map do
+        local n = drawer.line_map[i]
+        if n and n.kind == "table" and n.connection_id == entry.connection_id and n.table == entry.table then
+          local same_schema = (not n.schema and not entry.schema) or (n.schema == entry.schema)
+          if same_schema then
+            pcall(vim.api.nvim_win_set_cursor, drawer.window, { i, 0 })
+            return
+          end
+        end
+      end
+      -- fallback: move to top if not found
+      pcall(vim.api.nvim_win_set_cursor, drawer.window, { 1, 0 })
+    end
+  end)
+end
+
 return ui
