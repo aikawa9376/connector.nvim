@@ -35,6 +35,21 @@ local function setup_ui()
   m.current_project = m.current_project or util.resolve_project()
 
   m.result = ResultUI:new(m.handler, m.config.result)
+
+  -- Ensure connector-result windows use horizontal scrolling and same highlights
+  vim.api.nvim_create_autocmd("FileType", {
+    pattern = "connector-result",
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      pcall(vim.api.nvim_win_set_option, win, "wrap", false)
+      pcall(vim.api.nvim_win_set_option, win, "sidescroll", 1)
+      pcall(vim.api.nvim_win_set_option, win, "sidescrolloff", 5)
+      pcall(vim.api.nvim_win_set_option, win, "number", false)
+      pcall(vim.api.nvim_win_set_option, win, "relativenumber", false)
+      pcall(vim.cmd, [[match Delimiter /^\s*\d\+\|─\|│\|┼/]])
+    end,
+  })
+
   m.call_log = CallLogUI:new(m.handler, m.result, m.config.call_log)
   m.editor = EditorUI:new(m.handler, m.result, m.config.editor, {
     get_current_project = function() return m.current_project end

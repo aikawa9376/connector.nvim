@@ -104,13 +104,19 @@ function M.to_table_lines(result, from, to)
     table.insert(widths, measure_width(column.name))
   end
 
+  -- Measure widths, taking into account multiline cell contents
   for index, column in ipairs(columns) do
     widths[index + 1] = math.max(widths[index + 1], measure_width(column.name))
   end
   for row_offset, row in ipairs(rows) do
     widths[1] = math.max(widths[1], measure_width(tostring(start_idx + row_offset)))
     for index, value in ipairs(row) do
-      widths[index + 1] = math.max(widths[index + 1], measure_width(util.value_to_string(value)))
+      local text = util.value_to_string(value)
+      local parts = vim.split(text, "\n", true)
+      if #parts == 0 then parts = { "" } end
+      for _, part in ipairs(parts) do
+        widths[index + 1] = math.max(widths[index + 1], measure_width(part))
+      end
     end
   end
 
@@ -126,14 +132,36 @@ function M.to_table_lines(result, from, to)
   local cell_map = {}
 
   for index, row in ipairs(rows) do
-    local row_values = { tostring(start_idx + index) }
-    for _, value in ipairs(row) do
-      table.insert(row_values, value)
+    -- Prepare multiline parts for each column
+    local parts_by_col = {}
+    local max_lines = 1
+    for col_i = 1, #columns do
+      local val = row[col_i]
+      local text = util.value_to_string(val)
+      local parts = vim.split(text, "\n", true)
+      if #parts == 0 then parts = { "" } end
+      parts_by_col[col_i] = parts
+      if #parts > max_lines then max_lines = #parts end
     end
-    local line, cells = render_row(row_values, widths, true)
-    table.insert(lines, line)
-    line_map[#lines] = start_idx + index - 1
-    cell_map[#lines] = cells
+
+    for line_idx = 1, max_lines do
+      -- build values for this physical line: first column is row number (only on first physical line)
+      local values_line = {}
+      if line_idx == 1 then
+        table.insert(values_line, tostring(start_idx + index))
+      else
+        table.insert(values_line, "")
+      end
+      for col_i = 1, #columns do
+        local part = parts_by_col[col_i][line_idx] or ""
+        table.insert(values_line, part)
+      end
+
+      local line, cells = render_row(values_line, widths, true)
+      table.insert(lines, line)
+      line_map[#lines] = start_idx + index - 1
+      cell_map[#lines] = cells
+    end
   end
 
   table.insert(lines, render_separator(widths))

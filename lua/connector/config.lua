@@ -53,8 +53,9 @@ function config.default()
         { key = "BB", mode = "v", action = "run_selection" },
         { key = "BB", mode = "n", action = "run_file" },
         { key = "<CR>", mode = "n", action = "run_under_cursor" },
-        { key = "<C-CR>", mode = "n", action = "run_in_float" },
-        { key = "<C-CR>", mode = "v", action = "run_in_float" },
+        { key = "<C-Space>", mode = "n", action = "run_in_float" },
+        { key = "<C-Space>", mode = "v", action = "run_in_float" },
+        { key = "gd", mode = "n", action = "jump_to_table" },
       },
     },
 

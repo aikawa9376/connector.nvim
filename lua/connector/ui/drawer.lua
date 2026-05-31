@@ -288,6 +288,19 @@ function DrawerUI:refresh()
     key = "root:connections",
   }, { expandable = true })
   if self:is_expanded("root:connections") then
+    -- Auto-expand current active connection and its current database so initial view shows DB list
+    local active_conn = self.handler:get_current_connection()
+    if active_conn and active_conn.id then
+      if active_conn.source_id then
+        self.expanded["source:" .. active_conn.source_id] = true
+      end
+      self.expanded["connection:" .. active_conn.id] = true
+      local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, active_conn.id)
+      if ok_db and current_db and current_db ~= "" then
+        self.expanded[("database:%s:%s"):format(active_conn.id, current_db)] = true
+      end
+    end
+
     for _, source in ipairs(self.handler:get_sources()) do
       local source_key = "source:" .. source:name()
       self:add_line(lines, 1, source:name(), {

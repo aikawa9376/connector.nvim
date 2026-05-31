@@ -313,10 +313,117 @@ function EditorUI:run_query(query)
   end)
 end
 
+function EditorUI:jump_to_table_under_cursor()
+  local state_api = require("connector.api.state")
+  local api_ui = require("connector.api.ui")
+
+  local schema, tbl
+  local token = vim.fn.expand("<cWORD>") or ""
+  token = token:gsub("^%s+", ""):gsub("%s+$", "")
+
+  if token ~= "" then
+    if token:find("%.") then
+      local parts = {}
+      for part in token:gmatch("[^%.]+") do
+        table.insert(parts, util.strip_identifier_quotes(part))
+      end
+      if #parts >= 2 then
+        schema = parts[#parts-1]
+        tbl = parts[#parts]
+      else
+        tbl = parts[#parts]
+      end
+    else
+      tbl = util.strip_identifier_quotes(token)
+    end
+  else
+    local line = vim.api.nvim_get_current_line()
+    local refs = util.parse_query_table_references(line)
+    if #refs >= 1 then
+      schema = refs[1].schema
+      tbl = refs[1].table
+    end
+  end
+
+  if not tbl or tbl == "" then
+    util.notify("No table found under cursor", vim.log.levels.INFO)
+    return
+  end
+
+  -- Pick a connection seed
+  local conn_id = self.handler.current_connection_id
+  if not conn_id then
+    for id in pairs(self.handler.connections) do conn_id = id; break end
+  end
+  if not conn_id then
+    util.notify("No connections configured", vim.log.levels.ERROR)
+    return
+  end
+
+  -- Resolve table entry
+  local entry = nil
+  pcall(function() self.handler:ensure_table_index(conn_id) end)
+  entry = self.handler:resolve_table_reference(conn_id, schema, tbl)
+  if not entry then
+    local entries = self.handler:find_table_entries(conn_id, tbl)
+    if entries and #entries > 0 then entry = entries[1] end
+  end
+
+  if not entry then
+    util.notify(("Table not found: %s"):format(tbl), vim.log.levels.INFO)
+    return
+  end
+
+  -- Apply context (switch connection/database if needed)
+  pcall(function() self.handler:apply_table_context(conn_id, entry, { notify = true }) end)
+
+  -- Ensure drawer is visible
+  local drawer = state_api.drawer()
+  local curwin = vim.api.nvim_get_current_win()
+  if not drawer.window or not vim.api.nvim_win_is_valid(drawer.window) then
+    local width = 36
+    vim.cmd(("topleft %svsplit"):format(width))
+    local win = vim.api.nvim_get_current_win()
+    api_ui.drawer_show(win)
+    pcall(vim.api.nvim_set_current_win, curwin)
+  end
+
+  -- Expand path to table
+  drawer.expanded["root:connections"] = true
+  local conn = self.handler.connections[entry.connection_id]
+  if conn and conn.source_id then drawer.expanded["source:" .. conn.source_id] = true end
+  drawer.expanded["connection:" .. entry.connection_id] = true
+  if entry.schema and entry.schema ~= "" then
+    drawer.expanded[("database:%s:%s"):format(entry.connection_id, entry.schema)] = true
+  end
+  drawer.expanded[("table:%s:%s:%s"):format(entry.connection_id, entry.schema or "", entry.table)] = true
+
+  drawer:refresh()
+
+  -- Move cursor to the table line
+  if drawer.window and vim.api.nvim_win_is_valid(drawer.window) then
+    for i = 1, #drawer.line_map do
+      local node = drawer.line_map[i]
+      if node and node.kind == "table" and node.connection_id == entry.connection_id and (node.table == entry.table) and ((node.schema or "") == (entry.schema or "")) then
+        pcall(vim.api.nvim_win_set_cursor, drawer.window, { i, 0 })
+        pcall(vim.api.nvim_win_call, drawer.window, function()
+          pcall(vim.cmd, 'normal! zz')
+        end)
+        break
+      end
+    end
+  end
+end
+
 function EditorUI:do_action(action)
   self:ensure_default_note()
   local note = assert(self:search_note(self.current_note_id))
   local bufnr = note.bufnr
+
+  if action == "jump_to_table" then
+    self:jump_to_table_under_cursor()
+    return
+  end
 
   if action == "run_file" then
     self:run_query(table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"))
@@ -344,18 +451,21 @@ function EditorUI:do_action(action)
       return
     end
 
-    -- Create ephemeral buffer and float window
+    -- Create ephemeral buffer and float window (styled like ResultUI)
     local ui = vim.api.nvim_list_uis()[1]
     local width = math.max(40, math.min(ui.width - 8, math.floor(ui.width * 0.85)))
     local height = math.max(10, math.min(ui.height - 4, math.floor(ui.height * 0.85)))
     local col = math.floor((ui.width - width) / 2)
     local row = math.floor((ui.height - height) / 2)
+
     local res_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[res_buf].bufhidden = "wipe"
-    vim.bo[res_buf].filetype = "sql"
+    vim.bo[res_buf].filetype = "connector-result"
+    vim.bo[res_buf].buflisted = false
     vim.api.nvim_buf_set_option(res_buf, "modifiable", true)
     vim.api.nvim_buf_set_lines(res_buf, 0, -1, false, { "Running query..." })
     vim.api.nvim_buf_set_option(res_buf, "modifiable", false)
+
     local winid = vim.api.nvim_open_win(res_buf, true, {
       relative = "editor",
       width = width,
@@ -366,14 +476,36 @@ function EditorUI:do_action(action)
       style = "minimal",
       zindex = 150,
     })
+
+    -- Make sure float doesn't wrap and looks like the result window
+    pcall(vim.api.nvim_win_set_option, winid, "wrap", false)
+    pcall(vim.api.nvim_win_set_option, winid, "sidescroll", 1)
+    pcall(vim.api.nvim_win_set_option, winid, "sidescrolloff", 5)
+    pcall(vim.api.nvim_win_set_option, winid, "number", false)
+    pcall(vim.api.nvim_win_set_option, winid, "relativenumber", false)
+
+    -- Apply same delimiter match as ResultUI (window-local)
+    local curwin = vim.api.nvim_get_current_win()
+    pcall(vim.api.nvim_set_current_win, winid)
+    pcall(vim.cmd, [[match Delimiter /^\s*\d\\+|─|│|┼/]])
+    if vim.api.nvim_win_is_valid(curwin) then
+      pcall(vim.api.nvim_set_current_win, curwin)
+    end
+
     vim.keymap.set("n", "q", function() pcall(vim.api.nvim_win_close, winid, true) end, { buffer = res_buf, silent = true })
 
-    -- Register listener to write results when call is completed
+    -- Register listener to write results when call is completed (also reapply match)
     local function on_call_state(payload)
       if not payload or not payload.id then return end
       if payload.state == "archived" then
         pcall(function()
           self.handler:call_store_result(payload.id, "table", "buffer", { extra_arg = res_buf })
+          if vim.api.nvim_win_is_valid(winid) then
+            local cur = vim.api.nvim_get_current_win()
+            pcall(vim.api.nvim_set_current_win, winid)
+            pcall(vim.cmd, [[match Delimiter /^\s*\d\\+|─|│|┼/]])
+            pcall(vim.api.nvim_set_current_win, cur)
+          end
         end)
       end
     end
@@ -383,6 +515,12 @@ function EditorUI:do_action(action)
       if call and call.state == "archived" then
         pcall(function()
           self.handler:call_store_result(call.id, "table", "buffer", { extra_arg = res_buf })
+          if vim.api.nvim_win_is_valid(winid) then
+            local cur = vim.api.nvim_get_current_win()
+            pcall(vim.api.nvim_set_current_win, winid)
+            pcall(vim.cmd, [[match Delimiter /^\s*\d\\+|─|│|┼/]])
+            pcall(vim.api.nvim_set_current_win, cur)
+          end
         end)
       end
     end)
