@@ -183,6 +183,32 @@ function ResultUI:page_first()
   self:refresh()
 end
 
+function ResultUI:history_neighbor(direction)
+  local call = self:get_call()
+  if not call then
+    return
+  end
+  local next_call = self.handler:call_neighbor(call.id, direction)
+  if not next_call then
+    util.notify(("No %s query in this project/branch."):format(direction == "newer" and "newer" or "older"))
+    return
+  end
+  self:set_call(next_call)
+end
+
+function ResultUI:result_neighbor(direction)
+  local call = self:get_call()
+  if not call then
+    return
+  end
+  local next_call = self.handler:result_neighbor(call.id, direction)
+  if not next_call then
+    util.notify(("No %s result."):format(direction == "newer" and "newer" or "older"))
+    return
+  end
+  self:set_call(next_call)
+end
+
 function ResultUI:selected_range()
   local call = self:get_call()
   if not call or not call.result then
@@ -353,6 +379,14 @@ function ResultUI:do_action(action)
     self:page_last()
   elseif action == "page_first" then
     self:page_first()
+  elseif action == "result_newer" then
+    self:result_neighbor("newer")
+  elseif action == "result_older" then
+    self:result_neighbor("older")
+  elseif action == "history_newer" then
+    self:history_neighbor("newer")
+  elseif action == "history_older" then
+    self:history_neighbor("older")
   elseif action == "yank_current_json" or action == "yank_selection_json" then
     self:yank("json", false)
   elseif action == "yank_all_json" then

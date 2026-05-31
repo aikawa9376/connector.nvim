@@ -96,6 +96,84 @@ function M.remove_project_mapping(root)
   M.write_project_mappings(map)
 end
 
+function M.project_key(project)
+  if not project then return nil end
+  if project.root and project.root ~= "" then
+    return "root:" .. project.root
+  end
+  if project.namespace and project.namespace ~= "" then
+    return "namespace:" .. project.namespace
+  end
+  if project.name and project.name ~= "" then
+    return "project:" .. project.name .. "/" .. (project.branch or "")
+  end
+  return nil
+end
+
+function M.project_db_ignores_file()
+  return M.state_path("connector", "project_db_ignores.json")
+end
+
+function M.read_project_db_ignores()
+  return M.read_json(M.project_db_ignores_file(), {})
+end
+
+function M.write_project_db_ignores(tbl)
+  M.write_json(M.project_db_ignores_file(), tbl or {})
+end
+
+function M.is_project_database_ignored(project, connection_id, database)
+  local project_key = M.project_key(project)
+  if not project_key or not connection_id or not database or database == "" then
+    return false
+  end
+  local ignores = M.read_project_db_ignores()
+  return (ignores[project_key]
+    and ignores[project_key][connection_id]
+    and ignores[project_key][connection_id][database] == true) or false
+end
+
+function M.project_ignored_databases(project, connection_id)
+  local project_key = M.project_key(project)
+  if not project_key or not connection_id then
+    return {}
+  end
+  local ignores = M.read_project_db_ignores()
+  local databases = ignores[project_key] and ignores[project_key][connection_id] or {}
+  local items = vim.tbl_keys(databases)
+  table.sort(items)
+  return items
+end
+
+function M.set_project_database_ignored(project, connection_id, database, ignored)
+  local project_key = M.project_key(project)
+  if not project_key then
+    error("current SQL project is required to ignore databases")
+  end
+  if not connection_id or connection_id == "" then
+    error("connection_id is required")
+  end
+  if not database or database == "" then
+    error("database is required")
+  end
+
+  local ignores = M.read_project_db_ignores()
+  ignores[project_key] = ignores[project_key] or {}
+  ignores[project_key][connection_id] = ignores[project_key][connection_id] or {}
+  if ignored then
+    ignores[project_key][connection_id][database] = true
+  else
+    ignores[project_key][connection_id][database] = nil
+    if next(ignores[project_key][connection_id]) == nil then
+      ignores[project_key][connection_id] = nil
+    end
+    if next(ignores[project_key]) == nil then
+      ignores[project_key] = nil
+    end
+  end
+  M.write_project_db_ignores(ignores)
+end
+
 function M.random_id(prefix)
   prefix = prefix or "id"
   return ("%s-%x-%x"):format(prefix, uv.hrtime(), math.random(0, 0xffffff))
@@ -439,20 +517,42 @@ function M.is_scratchpad_path(path)
   return vim.startswith(path, scratch_root)
 end
 
+function M.project_from_namespace(namespace)
+  if not namespace or namespace == "" or namespace == "global" then
+    return nil
+  end
+
+  local parts = vim.split(namespace, "/")
+  local name = parts[1]
+  if not name or name == "" or name == "global" then
+    return nil
+  end
+
+  local root = nil
+  for mapped_root, mapped_namespace in pairs(M.read_project_mappings()) do
+    if mapped_namespace == namespace or mapped_namespace:match("^" .. vim.pesc(name) .. "/") then
+      root = mapped_root
+      break
+    end
+  end
+
+  return {
+    name = name,
+    root = root,
+    branch = parts[2],
+    namespace = namespace,
+    is_scratchpad = true,
+  }
+end
+
 function M.resolve_project(path)
   path = path or vim.api.nvim_buf_get_name(0)
   if M.is_scratchpad_path(path) then
     local scratch_root = M.state_path("connector", "scratchpads")
     local relative = path:sub(#scratch_root + 2)
-    local namespace = relative:match("^([^/]+)")
-    if namespace and namespace ~= "global" then
-      return {
-        name = namespace,
-        root = nil,
-        is_scratchpad = true,
-      }
-    end
-    return nil
+    local namespace = vim.fs.dirname(relative)
+    if namespace == "." then namespace = relative:match("^([^/]+)") end
+    return M.project_from_namespace(namespace)
   end
 
   local root = M.find_project_root(path)
@@ -460,6 +560,7 @@ function M.resolve_project(path)
   return {
     name = vim.fs.basename(root),
     root = root,
+    branch = M.get_git_branch(root),
   }
 end
 

@@ -64,6 +64,9 @@ end
 function CallLogUI:refresh()
   local connection = self.handler:get_current_connection()
   local calls = connection and self.handler:connection_get_calls(connection.id) or {}
+  if #calls == 0 then
+    calls = self.handler:get_calls()
+  end
   local lines = {}
   self.line_map = {}
 
@@ -99,11 +102,14 @@ function CallLogUI:do_action(action)
   end
   if action == "show_result" then
     local call = self.handler:get_call(call_id)
-    if call and (call.state == "archived" or call.state == "executing") then
+    if call and (call.state == "archived" or call.state == "executing" or call.state == "history") then
       self.result:set_call(call)
     end
   elseif action == "cancel_call" then
-    self.handler:call_cancel(call_id)
+    local call = self.handler:get_call(call_id)
+    if call and call.state == "executing" then
+      self.handler:call_cancel(call_id)
+    end
   end
 end
 

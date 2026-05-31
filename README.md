@@ -104,10 +104,15 @@ export CONNECTOR_CONNECTIONS='[
 
 - `L` / `H` next/previous page
 - `E` / `F` last/first page
+- `]r` / `[r` newer/older result in the current session
+- `]q` / `[q` newer/older query history for the current project and branch
 - `<CR>` / `i` edit the current cell for editable results
 - `yaj` / `yac` yank current row or selection as JSON / CSV
 - `yaJ` / `yaC` yank all rows as JSON / CSV
 - `<C-c>` cancel the active call
+
+Query history is stored in Neovim state. `require("connector").history(opts)` returns entries for custom
+pickers, and `require("connector").history_fzf_source(opts)` returns one-line labels suitable for fzf-lua.
 
 Editable results currently target **single-table `select * from ...` queries with a primary key**. Primary-key
 columns stay read-only, and you can type `NULL` to clear nullable cells.
@@ -121,25 +126,29 @@ builds it with Cargo and copies the binary into Neovim's data directory.
 - [x] スクラッチのプロジェクト対応
 - [x] 開いた場所からプロジェクトをなんとなく解決する
   - [x] プロジェクト名を左ナビにいい感じに表示する
-  - [ ] 切り替えれるようにするとなおよい
-- [ ] スクラッチのテーブル名から左ナビひらく(gdとかで定義元いくイメージ)
+  - [x] 切り替えれるようにするとなおよい (開いているsqlベースで切り替えたい)
+  - [x] DB名のところでddするとdbがプロジェクトに紐づいた除外される
+    - [x] 除外されたDBはignoreみたいな名前でグルーピングされる(操作自体は可能) グレーアウトされている
+    - [-] ignoreグループからddでもとにもどせる
+- [x] スクラッチのテーブル名から左ナビひらく(gdとかで定義元いくイメージ)
+- [x] 一時ウインドウ(フロート？)でのクエリ実行
 - [ ] 補完ソース
-- [ ] 一時ウインドウ(フロート？)でのクエリ実行
-- [ ] プロジェクトごとの前回操作の保存
 - [ ] スクラッチファイルのfzf-lua検索
 - [ ] DB tabgle でfzf-lua検索 左ナビ連動
 - [ ] リフレッシュボタン
 - [ ] 結果からクエリを逆生成
 - [ ] 自動DB選択は副作用があるものはconfirmを挟む
-- [ ] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)
-  - [ ] そのための保存領域を確保(sqlite？)
-    - [ ] ここまでやるならクエリ履歴のfzf-lua検索も欲しいよね
-  - [ ] resultテーブルから前後のクエリに移動(これはプロジェクトを意識する)
-  - [ ] 合わせて左下の実行クエリも以前のクエリを保存する
+- [x] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)
+  - [x] そのための保存領域を確保(sqlite？)
+    - [x] ここまでやるならクエリ履歴のfzf-lua検索も欲しいよね(ソースとしてfzf-luaで使いやすいリストを出す関数を用意すればいいかな)
+    - [x] 複数行のクエリは一行として保存されるが改行はデータとしてもって復元可能にしたい
+      - [x] プロジェクト・ブランチ・テーブル等々 条件指定できると良い
+  - [x] resultテーブルから前後のクエリに移動(これはプロジェクト・ブランチを意識する)
+  - [x] 合わせて左下の実行クエリも保存された以前のクエリを表示する
 - [ ] クエリをビジュアル選択して複数発火するとスプリットでいい具合に表示してくれる
   - [ ] タブでだせてカジュアルに閉じれるといいなと
 - [ ] 左ナビでカラム出したとしてvせんたくでクエリ自動生成
 - [ ] いい感じにトンネルでダンプできる機能をrustで挟んで実現したい
 
-- [ ] er図を出せちゃったりする
+- [ ] ~er図を出せちゃったりする~
 - [ ] mdでいい感じにリレーション図を表示する

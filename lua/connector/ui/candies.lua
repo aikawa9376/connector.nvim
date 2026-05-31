@@ -7,6 +7,8 @@ function M.drawer_defaults()
     connection = { icon = "󱘖", icon_highlight = "SpecialChar", text_highlight = "" },
     connection_active = { icon = "󰪩", icon_highlight = "Title", text_highlight = "Title" },
     database_switch = { icon = "", icon_highlight = "Character", text_highlight = "" },
+    database_ignored = { icon = "", icon_highlight = "Comment", text_highlight = "Comment" },
+    ignore_group = { icon = "󰃖", icon_highlight = "Comment", text_highlight = "Comment" },
     schema = { icon = "", icon_highlight = "Directory", text_highlight = "" },
     table = { icon = "", icon_highlight = "Conditional", text_highlight = "" },
     view = { icon = "", icon_highlight = "Debug", text_highlight = "" },
@@ -26,6 +28,7 @@ function M.call_log_defaults()
     executing = { icon = "󰑐", icon_highlight = "Constant", text_highlight = "Constant" },
     failed = { icon = "󰑐", icon_highlight = "Error", text_highlight = "" },
     archived = { icon = "", icon_highlight = "Title", text_highlight = "" },
+    history = { icon = "", icon_highlight = "Constant", text_highlight = "" },
     canceled = { icon = "", icon_highlight = "Error", text_highlight = "" },
     unknown = { icon = "", icon_highlight = "Identifier", text_highlight = "" },
   }

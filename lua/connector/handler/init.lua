@@ -1,5 +1,6 @@
 local backend = require("connector.backend")
 local format = require("connector.format")
+local history_module = require("connector.history")
 local util = require("connector.util")
 
 local uv = vim.uv or vim.loop
@@ -55,6 +56,8 @@ function Handler:new(config)
     table_index = {},
     table_index_all_loaded = {},
     listeners = {},
+    history = history_module.new(config.history),
+    project_provider = nil,
   }
   setmetatable(o, self)
   self.__index = self
@@ -79,7 +82,13 @@ function Handler:new(config)
     end
   end
 
+  o:load_history_calls()
+
   return o
+end
+
+function Handler:set_project_provider(provider)
+  self.project_provider = provider
 end
 
 function Handler:register_event_listener(event, listener)
@@ -234,6 +243,161 @@ function Handler:get_call(id)
   return call and vim.deepcopy(call) or nil
 end
 
+function Handler:current_project()
+  if self.project_provider then
+    local ok, project = pcall(self.project_provider)
+    if ok and project then
+      return project
+    end
+  end
+  return util.resolve_project()
+end
+
+function Handler:query_history_context()
+  local project = self:current_project()
+  local branch = project and project.branch or nil
+  if project and project.root then
+    branch = branch or util.get_git_branch(project.root)
+  end
+  return {
+    project = project and project.name or nil,
+    project_root = project and project.root or nil,
+    branch = branch,
+  }
+end
+
+function Handler:history_entry_for_call(call)
+  local conn = self.connections[call.connection_id]
+  if not conn then
+    return nil
+  end
+  local context = self:query_history_context()
+  return vim.tbl_extend("force", context, {
+    connection_id = call.connection_id,
+    connection_name = conn.name,
+    connection_type = conn.type,
+    database = conn.database,
+    source_id = conn.source_id,
+    query = call.query,
+    state = call.state,
+    tables = util.parse_query_table_references(call.query),
+    executed_at = call.completed_at or call.started_at or os.date("!%Y-%m-%dT%H:%M:%SZ"),
+  })
+end
+
+function Handler:load_history_calls()
+  for _, entry in ipairs(self.history:list()) do
+    if entry.connection_id and self.connections[entry.connection_id] then
+      local call = {
+        id = entry.id,
+        history_id = entry.id,
+        connection_id = entry.connection_id,
+        query = entry.query,
+        state = "history",
+        started_at = entry.executed_at,
+        completed_at = entry.executed_at,
+        result = nil,
+        error = nil,
+        project = entry.project,
+        branch = entry.branch,
+      }
+      self.calls[call.id] = call
+      table.insert(self.call_order, call.id)
+    end
+  end
+end
+
+function Handler:record_call_history(call)
+  local entry = self:history_entry_for_call(call)
+  if not entry then
+    return nil
+  end
+  local ok, saved = pcall(self.history.record, self.history, entry)
+  if not ok then
+    util.notify(("Failed to save query history: %s"):format(saved), vim.log.levels.ERROR)
+    return nil
+  end
+  call.history_id = saved.id
+  call.project = saved.project
+  call.branch = saved.branch
+  return saved
+end
+
+function Handler:query_history(opts)
+  opts = opts or {}
+  local entries = self.history:list(opts)
+  if opts.include_missing_connections then
+    return entries
+  end
+  return vim.tbl_filter(function(entry)
+    return entry.connection_id and self.connections[entry.connection_id] ~= nil
+  end, entries)
+end
+
+function Handler:call_neighbor(id, direction)
+  local current = self.calls[id]
+  if not current then
+    return nil
+  end
+
+  local context = self:query_history_context()
+  local project = current.project or context.project
+  local branch = current.branch or context.branch
+  local current_index = nil
+  for index, call_id in ipairs(self.call_order) do
+    if call_id == id then
+      current_index = index
+      break
+    end
+  end
+  if not current_index then
+    return nil
+  end
+
+  local step = direction == "newer" and -1 or 1
+  local index = current_index + step
+  while index >= 1 and index <= #self.call_order do
+    local candidate = self.calls[self.call_order[index]]
+    local same_connection = candidate and candidate.connection_id == current.connection_id
+    local same_project = not project or candidate.project == project
+    local same_branch = not branch or candidate.branch == branch
+    if same_connection and same_project and same_branch then
+      return vim.deepcopy(candidate)
+    end
+    index = index + step
+  end
+  return nil
+end
+
+function Handler:result_neighbor(id, direction)
+  local current = self.calls[id]
+  if not current then
+    return nil
+  end
+
+  local current_index = nil
+  for index, call_id in ipairs(self.call_order) do
+    if call_id == id then
+      current_index = index
+      break
+    end
+  end
+  if not current_index then
+    return nil
+  end
+
+  local step = direction == "newer" and -1 or 1
+  local index = current_index + step
+  while index >= 1 and index <= #self.call_order do
+    local candidate = self.calls[self.call_order[index]]
+    if candidate and candidate.state == "archived" and candidate.result then
+      return vim.deepcopy(candidate)
+    end
+    index = index + step
+  end
+  return nil
+end
+
 function Handler:attach_editable_result(conn, query, result)
   local target = util.parse_editable_select(query)
   if not target then
@@ -379,6 +543,7 @@ function Handler:run_call(call)
       call.time_taken_s = (uv.hrtime() - call.started_at_hr) / 1e9
     end
     call.completed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    self:record_call_history(call)
     self:emit("call_state_changed", vim.deepcopy(call))
   end)
   self.running_calls[call.id] = handle
@@ -723,6 +888,17 @@ function Handler:connection_get_calls(id)
   for _, call_id in ipairs(self.call_order) do
     local call = self.calls[call_id]
     if call and call.connection_id == id then
+      table.insert(calls, vim.deepcopy(call))
+    end
+  end
+  return calls
+end
+
+function Handler:get_calls()
+  local calls = {}
+  for _, call_id in ipairs(self.call_order) do
+    local call = self.calls[call_id]
+    if call then
       table.insert(calls, vim.deepcopy(call))
     end
   end

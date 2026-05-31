@@ -27,6 +27,23 @@ local commands = {
     end
     require("connector").store(args[1], args[2], { extra_arg = args[3] })
   end,
+  history = function()
+    local connector = require("connector")
+    local entries = connector.history()
+    vim.ui.select(vim.tbl_map(function(entry)
+      return entry.display
+    end, entries), { prompt = "Select query history" }, function(_choice, idx)
+      local entry = idx and entries[idx] or nil
+      if entry then
+        connector.api.core.connection_execute(entry.connection_id, entry.query, function(call)
+          if call then
+            connector.api.ui.result_set_call(call)
+            connector.open()
+          end
+        end)
+      end
+    end)
+  end,
   reload = function()
     local api = require("connector").api.core
     for _, source in ipairs(api.get_sources()) do
@@ -75,4 +92,3 @@ end, {
     return {}
   end,
 })
-

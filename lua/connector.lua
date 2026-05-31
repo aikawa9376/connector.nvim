@@ -61,9 +61,19 @@ function connector.store(format_name, output, opts)
   api.core.call_store_result(call.id, format_name, output, opts or {})
 end
 
+function connector.history(opts)
+  return api.core.query_history(opts or {})
+end
+
+function connector.history_fzf_source(opts)
+  local entries = connector.history(opts or {})
+  return vim.tbl_map(function(entry)
+    return entry.display
+  end, entries)
+end
+
 function connector.install()
   return backend.install(api.current_config() or config.default())
 end
 
 return connector
-

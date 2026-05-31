@@ -26,7 +26,13 @@ function layouts.Default:open()
   local state_api = require("connector.api.state")
   local util = require("connector.util")
   -- Capture the project for the buffer where the user invoked open so Editor uses the expected project
-  state_api.set_current_project(util.resolve_project())
+  local current_buf = vim.api.nvim_get_current_buf()
+  local current_name = vim.api.nvim_buf_get_name(current_buf)
+  local is_sql = current_name:match("%.sql$") or util.is_scratchpad_path(current_name) or vim.bo[current_buf].filetype == "sql"
+  local project = is_sql and util.resolve_project(current_name) or nil
+  if project then
+    state_api.set_current_project(project, vim.api.nvim_get_current_buf())
+  end
 
   vim.cmd("tabnew")
   self.tabpage = vim.api.nvim_get_current_tabpage()
@@ -73,4 +79,3 @@ function layouts.Default:close()
 end
 
 return layouts
-

@@ -82,6 +82,14 @@ function core.connection_get_calls(id)
   return state.handler():connection_get_calls(id)
 end
 
+function core.get_calls()
+  return state.handler():get_calls()
+end
+
+function core.query_history(opts)
+  return state.handler():query_history(opts)
+end
+
 function core.call_cancel(id)
   state.handler():call_cancel(id)
 end

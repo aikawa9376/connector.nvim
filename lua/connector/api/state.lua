@@ -12,7 +12,35 @@ local m = {
   ui_loaded = false,
   config = nil,
   current_project = nil,
+  current_sql_bufnr = nil,
 }
+
+local function is_sql_context_buffer(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if name ~= "" and util.is_scratchpad_path(name) then
+    return true
+  end
+  if name:match("%.sql$") then
+    return true
+  end
+  return vim.bo[bufnr].filetype == "sql"
+end
+
+local function set_project_from_buf(bufnr)
+  if not is_sql_context_buffer(bufnr) then
+    return nil
+  end
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  local project = util.resolve_project(name)
+  if project then
+    m.current_project = project
+    m.current_sql_bufnr = bufnr
+  end
+  return project
+end
 
 local function setup_core()
   if m.core_loaded then
@@ -22,6 +50,9 @@ local function setup_core()
     error("setup() has not been called yet")
   end
   m.handler = Handler:new(m.config)
+  m.handler:set_project_provider(function()
+    return m.current_project or set_project_from_buf(vim.api.nvim_get_current_buf())
+  end)
   m.core_loaded = true
 end
 
@@ -31,8 +62,8 @@ local function setup_ui()
   end
   setup_core()
 
-  -- Seed current project from current buffer immediately so initial UI render picks the right project
-  m.current_project = m.current_project or util.resolve_project()
+  -- Seed from the SQL buffer that opened connector. Non-SQL connector buffers must not change project context.
+  m.current_project = m.current_project or set_project_from_buf(vim.api.nvim_get_current_buf())
 
   m.result = ResultUI:new(m.handler, m.config.result)
 
@@ -52,25 +83,28 @@ local function setup_ui()
 
   m.call_log = CallLogUI:new(m.handler, m.result, m.config.call_log)
   m.editor = EditorUI:new(m.handler, m.result, m.config.editor, {
-    get_current_project = function() return m.current_project end
+    get_current_project = function() return m.current_project end,
+    set_current_project = function(project, bufnr)
+      if project then
+        m.current_project = project
+        m.current_sql_bufnr = bufnr
+      end
+    end,
   })
   m.drawer = DrawerUI:new(m.handler, m.editor, m.result, m.config.drawer, {
     get_current_project = function() return m.current_project end
   })
 
+  m.editor:register_event_listener("current_note_changed", function(note)
+    if note and note.bufnr then
+      set_project_from_buf(note.bufnr)
+    end
+  end)
+
   vim.api.nvim_create_autocmd("BufEnter", {
     group = vim.api.nvim_create_augroup("connector-project-refresh", { clear = true }),
     callback = function()
-      local util = require("connector.util")
-      local project = util.resolve_project()
-      if project then
-        -- If we are in a scratchpad of the same project, keep the one with root info
-        if project.is_scratchpad and m.current_project and m.current_project.name == project.name then
-          -- Keep existing m.current_project
-        else
-          m.current_project = project
-        end
-      end
+      set_project_from_buf(vim.api.nvim_get_current_buf())
       if m.drawer and m.drawer.window and vim.api.nvim_win_is_valid(m.drawer.window) then
         m.drawer:refresh()
       end
@@ -127,10 +161,11 @@ end
 
 
 function M.current_project()
-  return m.current_project
+  return m.current_project or set_project_from_buf(vim.api.nvim_get_current_buf())
 end
-function M.set_current_project(project)
+function M.set_current_project(project, bufnr)
   m.current_project = project
+  m.current_sql_bufnr = bufnr
 end
 
 return M

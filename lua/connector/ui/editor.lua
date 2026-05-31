@@ -208,6 +208,9 @@ end
 function EditorUI:set_current_note(id)
   local note = assert(self:search_note(id), "note not found: " .. id)
   self.current_note_id = id
+  if self.state_helpers and self.state_helpers.set_current_project then
+    self.state_helpers.set_current_project(util.resolve_project(note.file), note.bufnr)
+  end
   if self.window and vim.api.nvim_win_is_valid(self.window) then
     vim.api.nvim_win_set_buf(self.window, note.bufnr)
   end
@@ -223,7 +226,7 @@ function EditorUI:ensure_default_note()
 
   local ns = "global"
   if project then
-    local branch = util.get_git_branch(project.root) or "main"
+    local branch = project.branch or (project.root and util.get_git_branch(project.root)) or "main"
     ns = project.name .. "/" .. branch
 
     -- If project has a root, prefer any persisted mapping for that root
