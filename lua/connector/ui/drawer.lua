@@ -490,16 +490,19 @@ function DrawerUI:table_history_action(node)
     connection_id = node.connection_id,
     table = node.table,
     schema = node.schema,
+    ignore_project_branch = true,
   })
   if #entries == 0 then
     entries = self.handler:query_history({
       table = node.table,
       schema = node.schema,
+      ignore_project_branch = true,
     })
   end
   if #entries == 0 and node.schema then
     entries = self.handler:query_history({
       table = node.table,
+      ignore_project_branch = true,
     })
   end
   if #entries == 0 then
