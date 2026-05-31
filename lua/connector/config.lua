@@ -28,9 +28,7 @@ function config.default()
         { key = "cw", mode = "n", action = "action_2" },
         { key = "dd", mode = "n", action = "action_3" },
         { key = "i", mode = "n", action = "action_ignore" },
-        -- 'dd' deletes connections; 'i' toggles ignore/unignore for databases and restores ignored groups.
         { key = "a", mode = "n", action = "action_add" },
-        -- Note: 'i' used here to avoid accidental file edits from the normal 'dd' operator in JSON editors.
         { key = "f", mode = "n", action = "action_toggle_filter" },
         { key = "o", mode = "n", action = "toggle" },
       },

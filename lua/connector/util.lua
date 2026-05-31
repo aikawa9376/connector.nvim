@@ -140,30 +140,61 @@ function M.project_ignored_databases(project, connection_id)
   end
   local ignores = M.read_project_db_ignores()
   local databases = ignores[project_key] and ignores[project_key][connection_id] or {}
-  local items = vim.tbl_keys(databases)
+  -- Filter out any special markers (e.g. connection-level ignore markers)
+  local items = {}
+  for k, v in pairs(databases) do
+    if k ~= "__connection__" and v == true then
+      table.insert(items, k)
+    end
+  end
   table.sort(items)
   return items
 end
 
-function M.set_project_database_ignored(project, connection_id, database, ignored)
+function M.is_project_connection_ignored(project, connection_id)
+  local project_key = M.project_key(project)
+  if not project_key or not connection_id then
+    return false
+  end
+  local ignores = M.read_project_db_ignores()
+  return (ignores[project_key]
+    and ignores[project_key][connection_id]
+    and ignores[project_key][connection_id]["__connection__"] == true) or false
+end
+
+function M.project_ignored_connections(project)
   local project_key = M.project_key(project)
   if not project_key then
-    error("current SQL project is required to ignore databases")
+    return {}
+  end
+  local ignores = M.read_project_db_ignores()
+  local conn_map = ignores[project_key] or {}
+  local keys = {}
+  for conn_id, dbs in pairs(conn_map) do
+    if dbs and dbs["__connection__"] == true then
+      table.insert(keys, conn_id)
+    end
+  end
+  table.sort(keys)
+  return keys
+end
+
+function M.set_project_connection_ignored(project, connection_id, ignored)
+  local project_key = M.project_key(project)
+  if not project_key then
+    error("current SQL project is required to ignore connections")
   end
   if not connection_id or connection_id == "" then
     error("connection_id is required")
-  end
-  if not database or database == "" then
-    error("database is required")
   end
 
   local ignores = M.read_project_db_ignores()
   ignores[project_key] = ignores[project_key] or {}
   ignores[project_key][connection_id] = ignores[project_key][connection_id] or {}
   if ignored then
-    ignores[project_key][connection_id][database] = true
+    ignores[project_key][connection_id]["__connection__"] = true
   else
-    ignores[project_key][connection_id][database] = nil
+    ignores[project_key][connection_id]["__connection__"] = nil
     if next(ignores[project_key][connection_id]) == nil then
       ignores[project_key][connection_id] = nil
     end

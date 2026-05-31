@@ -108,6 +108,8 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts
     return candies_module.get(self.candies, "ignore_group", "none_dir")
   elseif kind == "ignored_connection_group" then
     return candies_module.get(self.candies, "connection", "none_dir")
+  elseif kind == "ignored_connection_marker" then
+    return candies_module.get(self.candies, "remove", "none")
   elseif kind == "schema" or kind == "dbroot" then
     return candies_module.get(self.candies, "schema")
   elseif kind == "table" then
@@ -149,6 +151,12 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
     buffer_line.append(builder, active .. label)
   else
     local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active, opts)
+    -- Don't show the help icon for individual help items (they often render as an unwanted glyph)
+    if node.kind == "help" and depth > 0 then
+      candy = vim.deepcopy(candy)
+      candy.icon = ""
+      candy.icon_highlight = ""
+    end
     if candy.icon and candy.icon ~= "" then
       buffer_line.append(builder, candy.icon .. " ", candy.icon_highlight)
     elseif candy.icon == " " then
@@ -393,18 +401,40 @@ function DrawerUI:refresh()
 
     local ignored_by_connection = {}
     local database_meta = {}
+    local project_for_meta = self:current_project()
     local function get_database_meta(conn)
       if database_meta[conn.id] then
         return database_meta[conn.id]
       end
-      local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
+
       local meta = {
-        ok = ok_dbs,
-        current = current_db,
-        databases = databases or {},
+        ok = false,
+        current = nil,
+        databases = {},
         visible = {},
         ignored = {},
+        connection_ignored = false,
       }
+
+      -- Connection-level ignore takes precedence
+      local project = self:current_project()
+      if util.is_project_connection_ignored(project, conn.id) then
+        meta.connection_ignored = true
+        database_meta[conn.id] = meta
+        ignored_by_connection[conn.id] = {
+          conn = conn,
+          current_db = nil,
+          databases = {},
+          connection_ignored = true,
+        }
+        return meta
+      end
+
+      local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
+      meta.ok = ok_dbs
+      meta.current = current_db
+      meta.databases = databases or {}
+
       if ok_dbs and #(databases or {}) > 0 then
         for _, database in ipairs(databases or {}) do
           if self:is_database_ignored(conn.id, database) then
@@ -414,6 +444,7 @@ function DrawerUI:refresh()
           end
         end
       end
+
       local ignored = #meta.ignored > 0 and meta.ignored or util.project_ignored_databases(self:current_project(), conn.id)
       if #ignored > 0 then
         ignored_by_connection[conn.id] = {
@@ -439,52 +470,54 @@ function DrawerUI:refresh()
           }
         end
       end
-      self:add_line(lines, 1, source:name(), {
-        kind = "source",
-        key = source_key,
-        source_id = source:name(),
-      }, { expandable = true })
-      if self:is_expanded(source_key) then
-        for _, conn in ipairs(source_connections) do
-          local active = self.handler:get_current_connection()
-          local is_active = active and active.id == conn.id
-          local db_meta = get_database_meta(conn)
-          local has_databases = db_meta.ok and #db_meta.databases > 0
-          local conn_key = "connection:" .. conn.id
-          self:add_line(lines, 2, conn.name, {
-            kind = "connection",
-            key = conn_key,
-            connection_id = conn.id,
-            source_id = source:name(),
-          }, { expandable = true, active = is_active })
-          if self:is_expanded(conn_key) then
-            if has_databases then
-              for _, database in ipairs(db_meta.visible) do
-                self:add_database_line(lines, 3, conn, database, db_meta.current, false)
-              end
-            else
-              local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
-              if ok_structure then
-                self:render_structure_items(lines, 3, conn, structure)
+
+      -- Only show the source if it has connections or supports create/edit actions
+      local show_source = (#source_connections > 0) or type(source.create) == "function" or type(source.file) == "function"
+      if show_source then
+        self:add_line(lines, 1, source:name(), {
+          kind = "source",
+          key = source_key,
+          source_id = source:name(),
+        }, { expandable = true })
+        if self:is_expanded(source_key) then
+          for _, conn in ipairs(source_connections) do
+            local active = self.handler:get_current_connection()
+            local is_active = active and active.id == conn.id
+            local db_meta = get_database_meta(conn)
+            local has_databases = db_meta.ok and #db_meta.databases > 0
+            local conn_key = "connection:" .. conn.id
+
+            -- If the whole connection is ignored for the current project, don't show it in the main Connections list
+            if not db_meta.connection_ignored then
+              self:add_line(lines, 2, conn.name, {
+                kind = "connection",
+                key = conn_key,
+                connection_id = conn.id,
+                source_id = source:name(),
+              }, { expandable = true, active = is_active })
+              if self:is_expanded(conn_key) then
+                if has_databases then
+                  for _, database in ipairs(db_meta.visible) do
+                    self:add_database_line(lines, 3, conn, database, db_meta.current, false)
+                  end
+                else
+                  local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
+                  if ok_structure then
+                    self:render_structure_items(lines, 3, conn, structure)
+                  end
+                end
               end
             end
           end
-        end
 
-        if type(source.create) == "function" then
-          self:add_line(lines, 2, "add connection", {
-            kind = "add_connection",
-            key = "add:" .. source:name(),
-            source_id = source:name(),
-          })
-        end
-        if type(source.file) == "function" then
-          self:add_line(lines, 2, "edit source file", {
-            kind = "edit_source",
-            key = "edit:" .. source:name(),
-            source_id = source:name(),
-            file = source:file(),
-          })
+          if type(source.file) == "function" then
+            self:add_line(lines, 2, "edit source file", {
+              kind = "edit_source",
+              key = "edit:" .. source:name(),
+              source_id = source:name(),
+              file = source:file(),
+            })
+          end
         end
       end
     end
@@ -508,9 +541,33 @@ function DrawerUI:refresh()
             key = conn_key,
             connection_id = conn_id,
           }, { expandable = true, ignored = true })
-          if self:is_expanded(conn_key) then
-            for _, database in ipairs(entry.databases) do
-              self:add_database_line(lines, 3, entry.conn, database, entry.current_db, true)
+              if self:is_expanded(conn_key) then
+            -- If connection-level ignore is set, show its databases under the ignore group
+            if entry.connection_ignored then
+              -- Try database listing first
+              local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, entry.conn.id)
+              if ok_db and databases and #databases > 0 then
+                for _, database in ipairs(databases) do
+                  self:add_database_line(lines, 3, entry.conn, database, current_db, true)
+                end
+              else
+                -- If no databases returned, try rendering structure (tables) like the main connection view
+                local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, entry.conn.id)
+                if ok_structure and structure and #structure > 0 then
+                  self:render_structure_items(lines, 3, entry.conn, structure)
+                else
+                  -- Fallback marker only when nothing else can be displayed
+                  self:add_line(lines, 3, "(entire connection ignored)", {
+                    kind = "ignored_connection_marker",
+                    key = "ignored_marker:" .. conn_id,
+                    connection_id = conn_id,
+                  }, { ignored = true })
+                end
+              end
+            else
+              for _, database in ipairs(entry.databases) do
+                self:add_database_line(lines, 3, entry.conn, database, entry.current_db, true)
+              end
             end
           end
         end
@@ -518,6 +575,7 @@ function DrawerUI:refresh()
     end
   end
 
+        table.insert(lines, buffer_line.new_builder())
         self:add_line(lines, 0, "Scratchpads", {
     kind = "root",
     key = "root:scratchpads",
@@ -647,10 +705,11 @@ function DrawerUI:refresh()
   end
 
   if not self.config.disable_help then
-    self:add_line(lines, 0, "Help", {
-      kind = "help",
-      key = "root:help",
-    }, { expandable = true })
+  table.insert(lines, buffer_line.new_builder())
+  self:add_line(lines, 0, "Help", {
+    kind = "help",
+    key = "root:help",
+  }, { expandable = true })
     if self:is_expanded("root:help") then
       self:add_line(lines, 1, "<CR>: open/select", { kind = "help", key = "help:1" })
       self:add_line(lines, 1, "o: toggle node", { kind = "help", key = "help:2" })
@@ -722,6 +781,68 @@ function DrawerUI:do_action(action)
   end
 
   if action == "action_add" then
+    -- Detect whether the cursor is inside the Connections subtree.
+    local key = node.key or ""
+    local in_connections = key:match("^root:connections") or key:match("^source:") or key:match("^connection:") or key:match("^edit:") or key:match("^add:") or key:match("^ignored_") or node.kind == "ignored_databases_group" or node.kind == "ignored_connection_group"
+
+    if in_connections then
+      -- If on a connection or child under it, add to that connection's source
+      if node.connection_id then
+        local source_id = node.source_id
+        if not source_id then
+          local ok, conn = pcall(self.handler.connection_get_params, self.handler, node.connection_id)
+          if ok and conn and conn.source_id then
+            source_id = conn.source_id
+          end
+        end
+        if source_id then
+          self:connection_prompt({}, function(details)
+            local ok, err = pcall(self.handler.source_add_connection, self.handler, source_id, details)
+            if not ok then util.notify(err, vim.log.levels.ERROR) end
+            self.expanded["source:" .. source_id] = true
+            self:refresh()
+          end)
+        else
+          util.notify("Cannot determine source for this connection.", vim.log.levels.WARN)
+        end
+        return
+      end
+
+      -- If node directly references a source (edit_source, source header), add to that source
+      if node.source_id then
+        self:connection_prompt({}, function(details)
+          local ok, err = pcall(self.handler.source_add_connection, self.handler, node.source_id, details)
+          if not ok then util.notify(err, vim.log.levels.ERROR) end
+          self.expanded["source:" .. node.source_id] = true
+          self:refresh()
+        end)
+        return
+      end
+
+      -- Otherwise (e.g. root:connections or ignored group), ask the user which source to add to
+      local sources = self.handler:get_sources()
+      local creatable = {}
+      for _, s in ipairs(sources) do
+        if type(s.create) == "function" then
+          table.insert(creatable, s:name())
+        end
+      end
+      if #creatable == 0 then
+        util.notify("No sources support adding connections.", vim.log.levels.WARN)
+        return
+      end
+      vim.ui.select(creatable, { prompt = "Select source to add connection:" }, function(choice)
+        if not choice then return end
+        self:connection_prompt({}, function(details)
+          local ok, err = pcall(self.handler.source_add_connection, self.handler, choice, details)
+          if not ok then util.notify(err, vim.log.levels.ERROR) end
+          self:refresh()
+        end)
+      end)
+      return
+    end
+
+    -- Not in Connections subtree: fallback to creating a new scratchpad
     local ns = "global"
     if node.kind == "scratchpad_dir" or node.kind == "scratchpad" then
       ns = node.namespace
@@ -756,13 +877,6 @@ function DrawerUI:do_action(action)
       end
       self:toggle_node(node.key)
       self:refresh()
-    elseif node.kind == "add_connection" then
-      self:connection_prompt({}, function(details)
-        local ok, err = pcall(self.handler.source_add_connection, self.handler, node.source_id, details)
-        if not ok then
-          util.notify(err, vim.log.levels.ERROR)
-        end
-      end)
     elseif node.kind == "edit_source" then
       float.editor(node.file, {
         title = vim.fn.fnamemodify(node.file, ":t"),
@@ -854,57 +968,26 @@ function DrawerUI:do_action(action)
   if action == "action_ignore" then
     -- If invoked on a connection, present a list of databases for that connection
     if node.kind == "connection" then
-      local project = self:current_project()
-      if not project then
-        util.notify("Open a project SQL scratchpad before ignoring databases.", vim.log.levels.WARN)
-        return
-      end
-
-      local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, node.connection_id)
-      if not ok_db then
-        util.notify("Failed to list databases for connection.", vim.log.levels.ERROR)
-        return
-      end
-      databases = databases or {}
-      if #databases == 0 then
-        util.notify("No databases available for this connection.", vim.log.levels.INFO)
-        return
-      end
-
-      local ignored_list = util.project_ignored_databases(project, node.connection_id)
-      local ignored_set = {}
-      for _, d in ipairs(ignored_list) do ignored_set[d] = true end
-
-      local labels = {}
-      for _, d in ipairs(databases) do
-        if ignored_set[d] then
-          table.insert(labels, d .. " (ignored)")
-        else
-          table.insert(labels, d)
-        end
-      end
-      local dbs_map = vim.deepcopy(databases)
-
-      vim.ui.select(labels, { prompt = "Toggle ignore database:" }, function(choice, idx)
-        if not idx then return end
-        local db = dbs_map[idx]
-        local currently_ignored = ignored_set[db] == true
-        local ok, err = pcall(util.set_project_database_ignored, project, node.connection_id, db, not currently_ignored)
-        if not ok then
-          util.notify(err, vim.log.levels.ERROR)
-          return
-        end
-        if not currently_ignored then
-          self.expanded["ignored_databases"] = true
-          self.expanded["ignored_connection:" .. node.connection_id] = true
-          util.notify(("Ignored database for project: %s"):format(db))
-        else
-          util.notify(("Restored database for project: %s"):format(db))
-        end
-        self:refresh()
-      end)
-
+    local project = self:current_project()
+    if not project then
+      util.notify("Open a project SQL scratchpad before ignoring connections.", vim.log.levels.WARN)
       return
+    end
+
+    local conn_id = node.connection_id
+    local currently_ignored = util.is_project_connection_ignored(project, conn_id)
+    local ok, err = pcall(util.set_project_connection_ignored, project, conn_id, not currently_ignored)
+    if not ok then
+      util.notify(err, vim.log.levels.ERROR)
+      return
+    end
+    if not currently_ignored then
+      util.notify(("Ignored connection for project: %s"):format(node.connection_id))
+    else
+      util.notify(("Restored connection for project: %s"):format(node.connection_id))
+    end
+    self:refresh()
+    return
     end
 
     if node.kind == "ignored_connection_group" then
@@ -914,18 +997,29 @@ function DrawerUI:do_action(action)
         return
       end
       local conn_id = node.connection_id
-      local dbs = util.project_ignored_databases(project, conn_id)
-      if #dbs == 0 then
-        util.notify("No ignored databases for this connection.", vim.log.levels.INFO)
-        return
-      end
+
+      local restored = 0
       local last_err = nil
+
+      -- Unignore connection-level marker if present
+      if util.is_project_connection_ignored(project, conn_id) then
+        local okc, errc = pcall(util.set_project_connection_ignored, project, conn_id, false)
+        if not okc then last_err = errc else restored = restored + 1 end
+      end
+
+      -- Unignore per-database ignores as well
+      local dbs = util.project_ignored_databases(project, conn_id)
       for _, db in ipairs(dbs) do
         local ok, err = pcall(util.set_project_database_ignored, project, conn_id, db, false)
-        if not ok then last_err = err end
+        if not ok then last_err = err else restored = restored + 1 end
       end
+
       if last_err then util.notify(last_err, vim.log.levels.ERROR) end
-      util.notify(("Restored %d ignored databases for connection: %s"):format(#dbs, conn_id))
+      if restored == 0 then
+        util.notify("No ignored databases or connections for this connection.", vim.log.levels.INFO)
+      else
+        util.notify(("Restored %d ignored items for connection: %s"):format(restored, conn_id))
+      end
       self:refresh()
     elseif node.kind == "ignored_databases_group" then
       local project = self:current_project()

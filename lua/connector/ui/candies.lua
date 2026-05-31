@@ -14,7 +14,7 @@ function M.drawer_defaults()
     view = { icon = "", icon_highlight = "Debug", text_highlight = "" },
     column = { icon = "󰠵", icon_highlight = "WarningMsg", text_highlight = "" },
     add = { icon = "", icon_highlight = "String", text_highlight = "String" },
-    edit = { icon = "󰏫", icon_highlight = "Directory", text_highlight = "Directory" },
+    edit = { icon = "󰏫", icon_highlight = "Comment", text_highlight = "Comment" },
     remove = { icon = "󰆴", icon_highlight = "Error", text_highlight = "Error" },
     help = { icon = "󰋖", icon_highlight = "Title", text_highlight = "Title" },
     source = { icon = "󰃖", icon_highlight = "MoreMsg", text_highlight = "MoreMsg" },
