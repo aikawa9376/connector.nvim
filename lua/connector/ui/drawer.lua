@@ -597,7 +597,7 @@ function DrawerUI:refresh()
     for _, ns_id in ipairs(all_namespaces) do
       local parts = vim.split(ns_id, "/")
       local project_name = parts[1]
-      
+
       if not self.config.project_filter_only_current or project_name == active_project_name or project_name == "global" then
         local curr = tree
         for i, part in ipairs(parts) do
@@ -623,8 +623,8 @@ function DrawerUI:refresh()
           kind = "scratchpad_dir",
           key = ns_key,
           namespace = data.full_path,
-        }, { 
-          expandable = true, 
+        }, {
+          expandable = true,
           is_project = data.is_project,
           is_active_project = is_active
         })
@@ -852,6 +852,61 @@ function DrawerUI:do_action(action)
   end
 
   if action == "action_ignore" then
+    -- If invoked on a connection, present a list of databases for that connection
+    if node.kind == "connection" then
+      local project = self:current_project()
+      if not project then
+        util.notify("Open a project SQL scratchpad before ignoring databases.", vim.log.levels.WARN)
+        return
+      end
+
+      local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, node.connection_id)
+      if not ok_db then
+        util.notify("Failed to list databases for connection.", vim.log.levels.ERROR)
+        return
+      end
+      databases = databases or {}
+      if #databases == 0 then
+        util.notify("No databases available for this connection.", vim.log.levels.INFO)
+        return
+      end
+
+      local ignored_list = util.project_ignored_databases(project, node.connection_id)
+      local ignored_set = {}
+      for _, d in ipairs(ignored_list) do ignored_set[d] = true end
+
+      local labels = {}
+      for _, d in ipairs(databases) do
+        if ignored_set[d] then
+          table.insert(labels, d .. " (ignored)")
+        else
+          table.insert(labels, d)
+        end
+      end
+      local dbs_map = vim.deepcopy(databases)
+
+      vim.ui.select(labels, { prompt = "Toggle ignore database:" }, function(choice, idx)
+        if not idx then return end
+        local db = dbs_map[idx]
+        local currently_ignored = ignored_set[db] == true
+        local ok, err = pcall(util.set_project_database_ignored, project, node.connection_id, db, not currently_ignored)
+        if not ok then
+          util.notify(err, vim.log.levels.ERROR)
+          return
+        end
+        if not currently_ignored then
+          self.expanded["ignored_databases"] = true
+          self.expanded["ignored_connection:" .. node.connection_id] = true
+          util.notify(("Ignored database for project: %s"):format(db))
+        else
+          util.notify(("Restored database for project: %s"):format(db))
+        end
+        self:refresh()
+      end)
+
+      return
+    end
+
     if node.kind == "ignored_connection_group" then
       local project = self:current_project()
       if not project then
