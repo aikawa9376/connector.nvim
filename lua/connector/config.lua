@@ -25,6 +25,7 @@ function config.default()
       mappings = {
         { key = "r", mode = "n", action = "refresh" },
         { key = "<CR>", mode = "n", action = "action_1" },
+        { key = "<CR>", mode = "v", action = "action_1" },
         { key = "cw", mode = "n", action = "action_2" },
         { key = "dd", mode = "n", action = "action_3" },
         { key = "i", mode = "n", action = "action_ignore" },
@@ -32,6 +33,7 @@ function config.default()
         { key = "f", mode = "n", action = "action_toggle_filter" },
         { key = "o", mode = "n", action = "toggle" },
       },
+
     },
     result = {
       page_size = 100,
