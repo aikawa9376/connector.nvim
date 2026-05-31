@@ -56,7 +56,7 @@ function CallLogUI:build_call_line(call)
 
   local preview, candy = self:state_preview(call.state)
   buffer_line.append(builder, preview, candy.icon_highlight)
-  buffer_line.append(builder, " ┃ ", "Delimiter")
+  -- Use the padded preview to provide consistent spacing between icon and query. Avoid extra separator glyph.
   buffer_line.append(builder, buffer_line.truncate_display(query, 40), candy.text_highlight ~= "" and candy.text_highlight or nil)
   return builder
 end
