@@ -473,6 +473,7 @@ function Handler:connection_execute(id, query, done)
 end
 
 function Handler:begin_connection_execute(id, query)
+  local ctx = self:query_history_context()
   local call = {
     id = util.random_id("call"),
     connection_id = id,
@@ -483,6 +484,8 @@ function Handler:begin_connection_execute(id, query)
     result = nil,
     error = nil,
     context_retried = false,
+    project = ctx.project,
+    branch = ctx.branch,
   }
   self.calls[call.id] = call
   table.insert(self.call_order, 1, call.id)
@@ -890,22 +893,40 @@ function Handler:connection_select_database(id, database)
 end
 
 function Handler:connection_get_calls(id)
+  local ctx = self:query_history_context()
+  local project = ctx.project
+  local branch = ctx.branch
   local calls = {}
   for _, call_id in ipairs(self.call_order) do
     local call = self.calls[call_id]
     if call and call.connection_id == id then
-      table.insert(calls, vim.deepcopy(call))
+      if project and call.project ~= project then
+        -- skip entries from other projects
+      elseif branch and call.branch ~= branch then
+        -- skip entries from other branches
+      else
+        table.insert(calls, vim.deepcopy(call))
+      end
     end
   end
   return calls
 end
 
 function Handler:get_calls()
+  local ctx = self:query_history_context()
+  local project = ctx.project
+  local branch = ctx.branch
   local calls = {}
   for _, call_id in ipairs(self.call_order) do
     local call = self.calls[call_id]
     if call then
-      table.insert(calls, vim.deepcopy(call))
+      if project and call.project ~= project then
+        -- skip entries from other projects
+      elseif branch and call.branch ~= branch then
+        -- skip entries from other branches
+      else
+        table.insert(calls, vim.deepcopy(call))
+      end
     end
   end
   return calls
