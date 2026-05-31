@@ -125,7 +125,7 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts
     return candies_module.get(self.candies, "edit")
   elseif kind == "scratchpad" then
     return candies_module.get(self.candies, "note")
-    elseif kind == "scratchpad_dir" then
+  elseif kind == "scratchpad_dir" then
     if opts and opts.is_active_project then
       local candy = vim.deepcopy(candies_module.get(self.candies, "connection_active", "source"))
       candy.icon = "" -- Open folder icon
@@ -143,6 +143,11 @@ end
 
 function DrawerUI:add_line(lines, depth, label, node, opts)
   opts = opts or {}
+  -- mark whether this node is currently expanded (useful for folder icons)
+  if node and node.key and opts.expanded == nil then
+    opts.expanded = self:is_expanded(node.key)
+  end
+
   local builder = buffer_line.new_builder()
   buffer_line.append(builder, string.rep("  ", depth))
 
@@ -151,22 +156,104 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
     buffer_line.append(builder, active .. label)
   else
     local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active, opts)
-    -- Don't show the help icon for individual help items (they often render as an unwanted glyph)
-    if node.kind == "help" and depth > 0 then
-      candy = vim.deepcopy(candy)
-      candy.icon = ""
-      candy.icon_highlight = ""
+    local c = vim.deepcopy(candy)
+
+    -- current connection id (used to highlight connection children when the connection is active)
+    local current_conn = self.handler and self.handler:get_current_connection()
+    local current_conn_id = current_conn and current_conn.id or nil
+
+    -- Hide the help icon for help items
+    if node.kind == "help" then
+      c.icon = ""
+      c.icon_highlight = ""
+      if depth == 0 then
+        c.text_highlight = "Title"
+      else
+        c.text_highlight = nil
+      end
     end
-    if candy.icon and candy.icon ~= "" then
-      buffer_line.append(builder, candy.icon .. " ", candy.icon_highlight)
-    elseif candy.icon == " " then
+
+    -- Root headings: no icon but keep colored text
+    if node.kind == "root" then
+      c.icon = ""
+      c.icon_highlight = ""
+      c.text_highlight = "Title"
+    end
+
+    -- Determine whether this scratchpad dir contains the active namespace
+    local contains_active = false
+    if node and node.namespace and self._active_namespace and type(self._active_namespace) == "string" then
+      if self._active_namespace:sub(1, #node.namespace) == node.namespace then
+        contains_active = true
+      end
+    end
+
+    -- Scratchpad directories: show open/closed icons; color only when active context
+    if node.kind == "scratchpad_dir" then
+      c.icon = opts.expanded and "" or ""
+      if opts.is_active_project or contains_active then
+        c.icon_highlight = "Identifier"
+        c.text_highlight = opts.is_active_project and "Title" or "Identifier"
+      else
+        c.icon_highlight = "Comment"
+        c.text_highlight = "Comment"
+      end
+    end
+
+    -- Scratchpad files: active = green, active-context = blue icon / normal text, otherwise grey
+    if node.kind == "scratchpad" then
+      if opts.active then
+        c.icon_highlight = "String"
+        c.text_highlight = "String"
+      else
+        local in_active_context = opts.is_active_project or (opts.namespace and self._active_namespace and self._active_namespace:sub(1, #opts.namespace) == opts.namespace)
+        if in_active_context then
+          c.text_highlight = nil -- Normal text
+          c.icon_highlight = nil -- Normal icon
+        else
+          c.icon_highlight = "Comment"
+          c.text_highlight = "Comment"
+        end
+      end
+    end
+
+    -- Source headers: color when it contains the active connection
+    if node.kind == "source" then
+      if opts.active then
+        c.text_highlight = "Title"
+        c.icon_highlight = candy.icon_highlight
+      else
+        c.text_highlight = "Comment"
+        c.icon_highlight = "Comment"
+      end
+    end
+
+    -- Connection-related nodes: selected -> colored icon + normal text, otherwise normal text + candy icon (children not highlighted)
+    if node.kind == "connection" or node.kind == "database" or node.kind == "table" or node.kind == "schema" or node.kind == "column" or node.kind == "ignored_connection_group" then
+      local conn_active = node.connection_id and (node.connection_id == current_conn_id)
+
+      -- Default: candy icon color, normal text (nil)
+      c.icon_highlight = candy.icon_highlight
+      c.text_highlight = nil
+
+      if opts.active then
+        -- Selected node: color icon and text per candy
+        c.icon_highlight = candy.icon_highlight
+        c.text_highlight = (candy.text_highlight and candy.text_highlight ~= "") and candy.text_highlight or candy.icon_highlight
+      elseif not conn_active then
+        -- Non-active connection and its children: show as comment (dim)
+        c.text_highlight = "Comment"
+        c.icon_highlight = "Comment"
+      end
+    end
+
+    if c.icon and c.icon ~= "" then
+      buffer_line.append(builder, c.icon .. " ", c.icon_highlight)
+    elseif c.icon == " " then
       buffer_line.append(builder, " ")
     end
 
-    local text_hl = candy.text_highlight
-    if opts.active and candy.icon_highlight ~= "" then
-      text_hl = candy.icon_highlight
-    end
+    local text_hl = c.text_highlight
     buffer_line.append(builder, label, text_hl ~= "" and text_hl or nil)
   end
 
@@ -212,9 +299,12 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
   table.sort(items, function(left, right)
     return left.name < right.name
   end)
+  local current_conn = self.handler and self.handler:get_current_connection()
+  local current_conn_id = current_conn and current_conn.id or nil
   for _, item in ipairs(items) do
     local schema = item.schema
     local table_key = ("table:%s:%s:%s"):format(conn.id, schema or "", item.name)
+    local is_conn_active = current_conn_id == conn.id
     self:add_line(lines, depth, item.name, {
       kind = "table",
       key = table_key,
@@ -390,12 +480,21 @@ function DrawerUI:refresh()
     local active_conn = self.handler:get_current_connection()
     if active_conn and active_conn.id then
       if active_conn.source_id then
-        self.expanded["source:" .. active_conn.source_id] = true
+        local src_key = "source:" .. active_conn.source_id
+        if self.expanded[src_key] == nil then
+          self.expanded[src_key] = true
+        end
       end
-      self.expanded["connection:" .. active_conn.id] = true
+      local conn_key = "connection:" .. active_conn.id
+      if self.expanded[conn_key] == nil then
+        self.expanded[conn_key] = true
+      end
       local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, active_conn.id)
       if ok_db and current_db and current_db ~= "" then
-        self.expanded[("database:%s:%s"):format(active_conn.id, current_db)] = true
+        local db_key = ("database:%s:%s"):format(active_conn.id, current_db)
+        if self.expanded[db_key] == nil then
+          self.expanded[db_key] = true
+        end
       end
     end
 
@@ -474,11 +573,12 @@ function DrawerUI:refresh()
       -- Only show the source if it has connections or supports create/edit actions
       local show_source = (#source_connections > 0) or type(source.create) == "function" or type(source.file) == "function"
       if show_source then
+        local source_active = active_conn and active_conn.source_id == source:name()
         self:add_line(lines, 1, source:name(), {
           kind = "source",
           key = source_key,
           source_id = source:name(),
-        }, { expandable = true })
+        }, { expandable = true, active = source_active })
         if self:is_expanded(source_key) then
           for _, conn in ipairs(source_connections) do
             local active = self.handler:get_current_connection()
@@ -541,7 +641,7 @@ function DrawerUI:refresh()
             key = conn_key,
             connection_id = conn_id,
           }, { expandable = true, ignored = true })
-              if self:is_expanded(conn_key) then
+          if self:is_expanded(conn_key) then
             -- If connection-level ignore is set, show its databases under the ignore group
             if entry.connection_ignored then
               -- Try database listing first
@@ -560,7 +660,7 @@ function DrawerUI:refresh()
                   self:add_line(lines, 3, "(entire connection ignored)", {
                     kind = "ignored_connection_marker",
                     key = "ignored_marker:" .. conn_id,
-                    connection_id = conn_id,
+                    connection_id = conn.id,
                   }, { ignored = true })
                 end
               end
@@ -575,13 +675,13 @@ function DrawerUI:refresh()
     end
   end
 
-        table.insert(lines, buffer_line.new_builder())
-        self:add_line(lines, 0, "Scratchpads", {
+  table.insert(lines, buffer_line.new_builder())
+  self:add_line(lines, 0, "Scratchpads", {
     kind = "root",
     key = "root:scratchpads",
   }, { expandable = true })
   if self:is_expanded("root:scratchpads") then
-                    local all_namespaces = self.editor:get_namespaces()
+    local all_namespaces = self.editor:get_namespaces()
     local current_note = self.editor:get_current_note()
 
     local state_project = self.state_helpers.get_current_project and self.state_helpers.get_current_project() or nil
@@ -647,9 +747,15 @@ function DrawerUI:refresh()
     if active_namespace then
       local parts = vim.split(active_namespace, "/")
       for i=1,#parts do
-        self.expanded["scratchpad_ns:" .. table.concat(parts, "/", 1, i)] = true
+        local ns_key = "scratchpad_ns:" .. table.concat(parts, "/", 1, i)
+        if self.expanded[ns_key] == nil then
+          self.expanded[ns_key] = true
+        end
       end
     end
+
+    -- Store active namespace so add_line can make contextual coloring decisions
+    self._active_namespace = active_namespace
 
     local tree = {}
     for _, ns_id in ipairs(all_namespaces) do
@@ -695,7 +801,7 @@ function DrawerUI:refresh()
               key = "scratchpad:" .. note.id,
               note_id = note.id,
               namespace = data.full_path,
-            }, { active = current_note and current_note.id == note.id })
+            }, { active = current_note and current_note.id == note.id, is_active_project = is_active, namespace = data.full_path })
           end
         end
       end
@@ -705,11 +811,11 @@ function DrawerUI:refresh()
   end
 
   if not self.config.disable_help then
-  table.insert(lines, buffer_line.new_builder())
-  self:add_line(lines, 0, "Help", {
-    kind = "help",
-    key = "root:help",
-  }, { expandable = true })
+    table.insert(lines, buffer_line.new_builder())
+    self:add_line(lines, 0, "Help", {
+      kind = "help",
+      key = "root:help",
+    }, { expandable = true })
     if self:is_expanded("root:help") then
       self:add_line(lines, 1, "<CR>: open/select", { kind = "help", key = "help:1" })
       self:add_line(lines, 1, "o: toggle node", { kind = "help", key = "help:2" })
@@ -767,14 +873,52 @@ function DrawerUI:do_action(action)
   end
 
   if action == "toggle" then
-    if node.key then
+    -- Prefer toggling the node itself when it's an expandable kind (table, database, connection, source, etc.)
+    local expandable_kinds = {
+      root = true,
+      source = true,
+      connection = true,
+      database = true,
+      table = true,
+      scratchpad_dir = true,
+      ignored_databases_group = true,
+      ignored_connection_group = true,
+      help = true,
+    }
+
+    if node.kind and expandable_kinds[node.kind] and node.key then
       self:toggle_node(node.key)
       self:refresh()
+      return
     end
+
+    -- If on a column, toggle its parent table so 'o' opens the table columns
+    if node.kind == "column" and node.connection_id and node.table then
+      local table_key = ("table:%s:%s:%s"):format(node.connection_id, node.schema or "", node.table)
+      self:toggle_node(table_key)
+      self:refresh()
+      return
+    end
+
+    -- If on a scratchpad file, toggle its parent namespace/directory
+    if node.kind == "scratchpad" and node.namespace then
+      local ns_key = "scratchpad_ns:" .. node.namespace
+      self:toggle_node(ns_key)
+      self:refresh()
+      return
+    end
+
+    -- As a last resort, toggle the connection group if present
+    if node.connection_id then
+      self:toggle_node("connection:" .. node.connection_id)
+      self:refresh()
+      return
+    end
+
     return
   end
 
-    if action == "action_toggle_filter" then
+  if action == "action_toggle_filter" then
     self.config.project_filter_only_current = not self.config.project_filter_only_current
     self:refresh()
     return
@@ -968,26 +1112,26 @@ function DrawerUI:do_action(action)
   if action == "action_ignore" then
     -- If invoked on a connection, present a list of databases for that connection
     if node.kind == "connection" then
-    local project = self:current_project()
-    if not project then
-      util.notify("Open a project SQL scratchpad before ignoring connections.", vim.log.levels.WARN)
-      return
-    end
+      local project = self:current_project()
+      if not project then
+        util.notify("Open a project SQL scratchpad before ignoring connections.", vim.log.levels.WARN)
+        return
+      end
 
-    local conn_id = node.connection_id
-    local currently_ignored = util.is_project_connection_ignored(project, conn_id)
-    local ok, err = pcall(util.set_project_connection_ignored, project, conn_id, not currently_ignored)
-    if not ok then
-      util.notify(err, vim.log.levels.ERROR)
+      local conn_id = node.connection_id
+      local currently_ignored = util.is_project_connection_ignored(project, conn_id)
+      local ok, err = pcall(util.set_project_connection_ignored, project, conn_id, not currently_ignored)
+      if not ok then
+        util.notify(err, vim.log.levels.ERROR)
+        return
+      end
+      if not currently_ignored then
+        util.notify(("Ignored connection for project: %s"):format(node.connection_id))
+      else
+        util.notify(("Restored connection for project: %s"):format(node.connection_id))
+      end
+      self:refresh()
       return
-    end
-    if not currently_ignored then
-      util.notify(("Ignored connection for project: %s"):format(node.connection_id))
-    else
-      util.notify(("Restored connection for project: %s"):format(node.connection_id))
-    end
-    self:refresh()
-    return
     end
 
     if node.kind == "ignored_connection_group" then
