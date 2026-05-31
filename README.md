@@ -88,28 +88,38 @@ export CONNECTOR_CONNECTIONS='[
 
 ## Drawer workflow
 
-- `<CR>` select/open the node under cursor
-- `o` toggle a tree node
-- `cw` edit connection or rename scratchpad
-- `dd` delete connection or scratchpad
-- `r` refresh
+- `<CR>` select/open the node under cursor. On a table or column this opens a menu to generate SQL templates (Select/Update/Delete/Insert). Visual selection of columns is supported — use `v`/`V` to pick multiple columns before `<CR>`.
+- `o` toggle (expand/collapse) the node under cursor
+- `cw` edit connection details or rename a scratchpad
+- `dd` delete connection or scratchpad (use with care)
+- `i` ignore / unignore a database or connection for the current project
+- `a` add a new connection (context-aware: adds to the selected source/connection)
+- `f` toggle the "project only" scratchpad filter
+- `r` refresh the drawer view
 
 ## Editor workflow
 
 - `BB` in visual mode runs the selection
 - `BB` in normal mode runs the whole scratchpad
-- `<CR>` runs the current line
+- `<CR>` runs the current line under the cursor
+- `<C-Space>` runs the current selection or line in a floating window
+- `gd` jump-to-table: locate the definition/source table for the item under cursor (focuses the drawer)
 
 ## Result workflow
 
-- `L` / `H` next/previous page
-- `E` / `F` last/first page
-- `]r` / `[r` newer/older result in the current session
-- `]q` / `[q` newer/older query history for the current project and branch
-- `<CR>` / `i` edit the current cell for editable results
+- `L` / `H` next / previous page
+- `E` / `F` go to last / first page
+- `]r` / `[r` newer / older result in the current session
+- `]q` / `[q` newer / older query history for the current project and branch
+- `<CR>` or `i` edit the current cell for editable results (editable results are single-table SELECTs with a primary key)
 - `yaj` / `yac` yank current row or selection as JSON / CSV
 - `yaJ` / `yaC` yank all rows as JSON / CSV
 - `<C-c>` cancel the active call
+
+Additional features
+
+- Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/INSERT templates; generated queries are appended to the current scratchpad (not executed).
+- Table picker: `require("connector").api.ui.drawer_pick_table()` prompts for a table (Connection · schema.table) and focuses it in the left drawer.
 
 Query history is stored in Neovim state. `require("connector").history(opts)` returns entries for custom
 pickers, and `require("connector").history_fzf_source(opts)` returns one-line labels suitable for fzf-lua.

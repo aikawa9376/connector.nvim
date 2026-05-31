@@ -1080,11 +1080,14 @@ function DrawerUI:refresh()
       key = "root:help",
     }, { expandable = true })
     if self:is_expanded("root:help") then
-      self:add_line(lines, 1, "<CR>: open/select", { kind = "help", key = "help:1" })
-      self:add_line(lines, 1, "o: toggle node", { kind = "help", key = "help:2" })
-      self:add_line(lines, 1, "cw: rename/edit", { kind = "help", key = "help:3" })
-      self:add_line(lines, 1, "dd: delete", { kind = "help", key = "help:4" })
-      self:add_line(lines, 1, "r: refresh", { kind = "help", key = "help:5" })
+      self:add_line(lines, 1, "<CR>: open/select. On table/column opens SQL template menu; visual column selection supported", { kind = "help", key = "help:1" })
+      self:add_line(lines, 1, "o: toggle node (expand/collapse)", { kind = "help", key = "help:2" })
+      self:add_line(lines, 1, "cw: edit connection / rename scratchpad", { kind = "help", key = "help:3" })
+      self:add_line(lines, 1, "dd: delete connection or scratchpad", { kind = "help", key = "help:4" })
+      self:add_line(lines, 1, "i: ignore/unignore database or connection for current project", { kind = "help", key = "help:5" })
+      self:add_line(lines, 1, "a: add connection (context-aware)", { kind = "help", key = "help:6" })
+      self:add_line(lines, 1, "f: toggle project-only scratchpad filter", { kind = "help", key = "help:7" })
+      self:add_line(lines, 1, "r: refresh", { kind = "help", key = "help:8" })
     end
   end
 
