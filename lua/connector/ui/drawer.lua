@@ -837,7 +837,16 @@ function DrawerUI:do_action(action)
       if not ok then
         util.notify(err, vim.log.levels.ERROR)
       end
-    elseif node.kind == "ignored_connection_group" then
+    elseif node.kind == "scratchpad" then
+      local note, namespace = self.editor:search_note(node.note_id)
+      if note then
+        self.editor:namespace_remove_note(namespace, node.note_id)
+      end
+    end
+  end
+
+  if action == "action_ignore" then
+    if node.kind == "ignored_connection_group" then
       local project = self:current_project()
       if not project then
         util.notify("Open a project SQL scratchpad before restoring ignored databases.", vim.log.levels.WARN)
@@ -900,11 +909,6 @@ function DrawerUI:do_action(action)
         util.notify(("Restored database for project: %s"):format(node.database))
       end
       self:refresh()
-    elseif node.kind == "scratchpad" then
-      local note, namespace = self.editor:search_note(node.note_id)
-      if note then
-        self.editor:namespace_remove_note(namespace, node.note_id)
-      end
     end
   end
 end
