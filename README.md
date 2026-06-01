@@ -57,23 +57,27 @@ require("connector").setup({
 
 ## blink.cmp
 
-`connector.nvim` now exposes a blink.cmp source instead of wiring `omnifunc` into scratchpads.
+If `blink.cmp` is installed, `connector.nvim` registers its source automatically and enables it in SQL buffers.
 
 ```lua
 require("connector").setup()
+```
 
+You do **not** need to specify a database or add a manual blink provider config for the default setup.
+The source reuses connector's existing connection/structure metadata and only enables itself in SQL buffers.
+
+If you want to override the blink provider options manually, `require("connector").blink_source()` returns the
+provider config:
+
+```lua
 require("blink.cmp").setup({
   sources = {
-    default = { "lsp", "path", "buffer", "connector" },
     providers = {
       connector = require("connector").blink_source(),
     },
   },
 })
 ```
-
-You do **not** need to specify a database in the blink config. The source reuses connector's existing
-connection/structure metadata and only enables itself in SQL buffers.
 
 The source completes:
 
