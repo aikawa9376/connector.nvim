@@ -167,7 +167,7 @@ function EditorUI:namespace_create_note(id, name)
     proj = util.resolve_project()
   end
   if proj and proj.root then
-    util.set_project_mapping(proj.root, id)
+    util.set_project_mapping(proj, id)
   end
 
   return note_id
@@ -240,26 +240,14 @@ function EditorUI:resolve_active_namespace(project)
     return default_namespace
   end
 
-  local mapped = util.get_project_mapping(project.root)
+  if self.namespaces[default_namespace] then
+    util.set_project_mapping(project, default_namespace)
+    return default_namespace
+  end
+
+  local mapped = util.get_project_mapping(project)
   if mapped and self.namespaces[mapped] then
     return mapped
-  end
-
-  local prefix = project.name .. "/"
-  local fallback = nil
-  for _, namespace in ipairs(self:get_namespaces()) do
-    if namespace == default_namespace then
-      util.set_project_mapping(project.root, namespace)
-      return namespace
-    end
-    if not fallback and namespace:sub(1, #prefix) == prefix then
-      fallback = namespace
-    end
-  end
-
-  if fallback then
-    util.set_project_mapping(project.root, fallback)
-    return fallback
   end
 
   return default_namespace
@@ -576,8 +564,16 @@ function EditorUI:namespace_rename(id, new_id)
   -- Update project mappings: any root mapping that pointed to the old namespace should now point to the new one
   local mappings = util.read_project_mappings()
   local changed = false
-  for root, ns in pairs(mappings) do
-    if ns == id then
+  for root, entry in pairs(mappings) do
+    if type(entry) == "table" then
+      for branch, ns in pairs(entry) do
+        if ns == id then
+          entry[branch] = new_id
+          changed = true
+        end
+      end
+      mappings[root] = entry
+    elseif entry == id then
       mappings[root] = new_id
       changed = true
     end

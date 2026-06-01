@@ -77,22 +77,71 @@ function M.write_project_mappings(tbl)
   M.write_json(M.project_mappings_file(), tbl or {})
 end
 
-function M.set_project_mapping(root, namespace)
+local function mapping_branch_key(branch)
+  if branch and branch ~= "" then
+    return branch
+  end
+  return "__default"
+end
+
+function M.set_project_mapping(project_or_root, namespace, branch)
+  local root = type(project_or_root) == "table" and project_or_root.root or project_or_root
+  branch = branch or (type(project_or_root) == "table" and project_or_root.branch or nil)
   if not root then return end
+
   local map = M.read_project_mappings()
-  map[root] = namespace
+  local current = map[root]
+  if type(current) == "string" then
+    local current_project = M.project_from_namespace(current)
+    current = {
+      [mapping_branch_key(current_project and current_project.branch or nil)] = current,
+    }
+  elseif type(current) ~= "table" then
+    current = {}
+  end
+
+  current[mapping_branch_key(branch)] = namespace
+  map[root] = current
   M.write_project_mappings(map)
 end
 
-function M.get_project_mapping(root)
+function M.get_project_mapping(project_or_root, branch)
+  local root = type(project_or_root) == "table" and project_or_root.root or project_or_root
+  branch = branch or (type(project_or_root) == "table" and project_or_root.branch or nil)
   if not root then return nil end
+
   local map = M.read_project_mappings()
-  return map[root]
+  local entry = map[root]
+  if type(entry) == "string" then
+    local mapped_project = M.project_from_namespace(entry)
+    if branch and branch ~= "" then
+      return mapped_project and mapped_project.branch == branch and entry or nil
+    end
+    return entry
+  end
+  if type(entry) ~= "table" then
+    return nil
+  end
+  return entry[mapping_branch_key(branch)]
 end
 
-function M.remove_project_mapping(root)
+function M.remove_project_mapping(project_or_root, branch)
+  local root = type(project_or_root) == "table" and project_or_root.root or project_or_root
+  branch = branch or (type(project_or_root) == "table" and project_or_root.branch or nil)
+  if not root then return end
+
   local map = M.read_project_mappings()
-  map[root] = nil
+  local entry = map[root]
+  if type(entry) == "table" and branch ~= nil then
+    entry[mapping_branch_key(branch)] = nil
+    if next(entry) == nil then
+      map[root] = nil
+    else
+      map[root] = entry
+    end
+  else
+    map[root] = nil
+  end
   M.write_project_mappings(map)
 end
 
@@ -619,9 +668,16 @@ function M.project_from_namespace(namespace)
   end
 
   local root = nil
-  for mapped_root, mapped_namespace in pairs(M.read_project_mappings()) do
-    if mapped_namespace == namespace or mapped_namespace:match("^" .. vim.pesc(name) .. "/") then
-      root = mapped_root
+  for mapped_root, mapped_entry in pairs(M.read_project_mappings()) do
+    local namespaces = type(mapped_entry) == "table" and vim.tbl_values(mapped_entry) or { mapped_entry }
+    for _, mapped_namespace in ipairs(namespaces) do
+      if type(mapped_namespace) == "string"
+        and (mapped_namespace == namespace or mapped_namespace:match("^" .. vim.pesc(name) .. "/")) then
+        root = mapped_root
+        break
+      end
+    end
+    if root then
       break
     end
   end

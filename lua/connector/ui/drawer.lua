@@ -1132,35 +1132,29 @@ function DrawerUI:refresh()
 
   buffer_line.render(self.bufnr, self.ns, lines)
 
-  -- Move cursor to active project directory so the drawer's visual selection follows the project
-  if self.window and vim.api.nvim_win_is_valid(self.window) and active_project_name then
+  -- Move cursor to the active namespace so the drawer follows the current project/branch.
+  if self.window and vim.api.nvim_win_is_valid(self.window) and active_namespace then
     for i = 1, #lines do
       local node = self.line_map[i]
-      if node and node.kind == "scratchpad_dir" then
-        local proj = vim.split(node.namespace, "/")[1]
-        if proj == active_project_name then
-          -- move cursor
-          pcall(vim.api.nvim_win_set_cursor, self.window, { i, 0 })
+      if node and node.kind == "scratchpad_dir" and node.namespace == active_namespace then
+        pcall(vim.api.nvim_win_set_cursor, self.window, { i, 0 })
 
-          -- If we've switched active project namespace, open the project's first scratchpad note in the editor
-          local ns = node.namespace
-          if ns and ns ~= self.last_active_namespace then
-            self.last_active_namespace = ns
-            if self.editor then
-              local notes = self.editor:namespace_get_notes(ns)
-              if notes and #notes > 0 then
-                local cur = self.editor:get_current_note()
-                if not cur or cur.namespace ~= ns then
-                  pcall(function()
-                    self.editor:set_current_note(notes[1].id)
-                  end)
-                end
+        if active_namespace ~= self.last_active_namespace then
+          self.last_active_namespace = active_namespace
+          if self.editor then
+            local notes = self.editor:namespace_get_notes(active_namespace)
+            if notes and #notes > 0 then
+              local cur = self.editor:get_current_note()
+              if not cur or cur.namespace ~= active_namespace then
+                pcall(function()
+                  self.editor:set_current_note(notes[1].id)
+                end)
               end
             end
           end
-
-          break
         end
+
+        break
       end
     end
   end
