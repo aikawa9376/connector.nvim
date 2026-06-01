@@ -181,7 +181,7 @@ builds it with Cargo and copies the binary into Neovim's data directory.
 - [x] 補完ソース
 - [ ] スクラッチファイルのfzf-lua検索
 - [X] DB tabgle でfzf-lua検索 左ナビ連動
-- [ ] リフレッシュボタン
+- [ ] ~リフレッシュボタン~ ボタンは甘え 自動でリフレッシュ！
 - [ ] ~結果からクエリを逆生成~ よく考えると不可能だし便利じゃない気がする
 - [x] 自動DB選択は副作用があるものはconfirmを挟む
 - [x] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)

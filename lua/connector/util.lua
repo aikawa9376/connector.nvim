@@ -613,6 +613,7 @@ function M.project_from_namespace(namespace)
 
   local parts = vim.split(namespace, "/")
   local name = parts[1]
+  local branch = #parts > 1 and table.concat(parts, "/", 2) or nil
   if not name or name == "" or name == "global" then
     return nil
   end
@@ -628,7 +629,7 @@ function M.project_from_namespace(namespace)
   return {
     name = name,
     root = root,
-    branch = parts[2],
+    branch = branch,
     namespace = namespace,
     is_scratchpad = true,
   }
