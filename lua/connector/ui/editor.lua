@@ -421,31 +421,7 @@ function EditorUI:jump_to_table_under_cursor()
     pcall(vim.api.nvim_set_current_win, curwin)
   end
 
-  -- Expand path to table
-  drawer.expanded["root:connections"] = true
-  local conn = self.handler.connections[entry.connection_id]
-  if conn and conn.source_id then drawer.expanded["source:" .. conn.source_id] = true end
-  drawer.expanded["connection:" .. entry.connection_id] = true
-  if entry.schema and entry.schema ~= "" then
-    drawer.expanded[("database:%s:%s"):format(entry.connection_id, entry.schema)] = true
-  end
-  drawer.expanded[("table:%s:%s:%s"):format(entry.connection_id, entry.schema or "", entry.table)] = true
-
-  drawer:refresh()
-
-  -- Move cursor to the table line
-  if drawer.window and vim.api.nvim_win_is_valid(drawer.window) then
-    for i = 1, #drawer.line_map do
-      local node = drawer.line_map[i]
-      if node and node.kind == "table" and node.connection_id == entry.connection_id and (node.table == entry.table) and ((node.schema or "") == (entry.schema or "")) then
-        pcall(vim.api.nvim_win_set_cursor, drawer.window, { i, 0 })
-        pcall(vim.api.nvim_win_call, drawer.window, function()
-          pcall(vim.cmd, 'normal! zz')
-        end)
-        break
-      end
-    end
-  end
+  drawer:reveal_table(entry)
 end
 
 function EditorUI:do_action(action)

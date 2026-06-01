@@ -45,6 +45,10 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
     o:refresh()
   end)
   handler:register_event_listener("query_context_changed", function(payload)
+    if payload and payload.table then
+      o:reveal_table(payload)
+      return
+    end
     o:expand_query_context(payload)
     o:refresh()
   end)
@@ -111,6 +115,64 @@ function DrawerUI:expand_query_context(payload)
       self.expanded["ignored_databases"] = true
       self.expanded["ignored_connection:" .. payload.connection_id] = true
     end
+  end
+end
+
+function DrawerUI:table_line(entry)
+  for line = 1, #self.line_map do
+    local node = self.line_map[line]
+    if node
+      and node.kind == "table"
+      and node.connection_id == entry.connection_id
+      and node.table == entry.table
+      and (node.schema or "") == (entry.schema or "") then
+      return line
+    end
+  end
+end
+
+function DrawerUI:reveal_table(entry, opts)
+  if not entry or not entry.connection_id or not entry.table then
+    return
+  end
+
+  opts = vim.tbl_extend("force", {
+    refresh = true,
+    focus_window = false,
+    center = true,
+    fallback_top = false,
+  }, opts or {})
+
+  self:expand_query_context(entry)
+  self.expanded[("table:%s:%s:%s"):format(entry.connection_id, entry.schema or "", entry.table)] = true
+
+  if opts.refresh then
+    self:refresh()
+  end
+
+  if not self.window or not vim.api.nvim_win_is_valid(self.window) then
+    return
+  end
+
+  local current_win = vim.api.nvim_get_current_win()
+  if opts.focus_window and current_win ~= self.window then
+    vim.api.nvim_set_current_win(self.window)
+  end
+
+  local line = self:table_line(entry)
+  if line then
+    pcall(vim.api.nvim_win_set_cursor, self.window, { line, 0 })
+    if opts.center then
+      pcall(vim.api.nvim_win_call, self.window, function()
+        pcall(vim.cmd, "normal! zz")
+      end)
+    end
+  elseif opts.fallback_top then
+    pcall(vim.api.nvim_win_set_cursor, self.window, { 1, 0 })
+  end
+
+  if not opts.focus_window and current_win ~= self.window and vim.api.nvim_win_is_valid(current_win) then
+    pcall(vim.api.nvim_set_current_win, current_win)
   end
 end
 

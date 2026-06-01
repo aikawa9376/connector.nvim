@@ -158,28 +158,10 @@ function ui.drawer_pick_table()
       handler:apply_table_context(nil, entry, { notify = false })
     end)
 
-    -- Expand the table node and refresh the drawer so the row exists
-    local table_key = ("table:%s:%s:%s"):format(entry.connection_id, entry.schema or "", entry.table)
-    drawer.expanded = drawer.expanded or {}
-    drawer.expanded[table_key] = true
-    drawer:refresh()
-
-    -- Focus drawer window and move cursor to the table line
-    if drawer.window and vim.api.nvim_win_is_valid(drawer.window) then
-      vim.api.nvim_set_current_win(drawer.window)
-      for i = 1, #drawer.line_map do
-        local n = drawer.line_map[i]
-        if n and n.kind == "table" and n.connection_id == entry.connection_id and n.table == entry.table then
-          local same_schema = (not n.schema and not entry.schema) or (n.schema == entry.schema)
-          if same_schema then
-            pcall(vim.api.nvim_win_set_cursor, drawer.window, { i, 0 })
-            return
-          end
-        end
-      end
-      -- fallback: move to top if not found
-      pcall(vim.api.nvim_win_set_cursor, drawer.window, { 1, 0 })
-    end
+    drawer:reveal_table(entry, {
+      focus_window = true,
+      fallback_top = true,
+    })
   end)
 end
 

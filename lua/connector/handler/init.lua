@@ -470,6 +470,12 @@ end
 
 function Handler:connection_execute(id, query, done)
   local resolved_id, entries = self:prepare_query_context(id, query)
+  if resolved_id == false then
+    if done then
+      done(nil)
+    end
+    return nil
+  end
   if entries then
     self:pick_table_context(id, entries, { notify = true }, function(chosen_id)
       if not chosen_id then
@@ -531,7 +537,23 @@ function Handler:run_call(call)
       local entries = self:failed_retry_candidates(call.query, call.connection_id)
       if #entries == 1 then
         call.context_retried = true
-        call.connection_id = self:apply_table_context(call.connection_id, entries[1], { notify = true })
+        local retried_connection_id = self:apply_table_context(call.connection_id, entries[1], {
+          notify = true,
+          reveal = true,
+          confirm_mutating = true,
+          query = call.query,
+        })
+        if retried_connection_id == false then
+          call.state = "failed"
+          call.error = "Canceled automatic context switch for mutating query."
+          if call.started_at_hr then
+            call.time_taken_s = (uv.hrtime() - call.started_at_hr) / 1e9
+          end
+          call.completed_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+          self:emit("call_state_changed", vim.deepcopy(call))
+          return
+        end
+        call.connection_id = retried_connection_id
         call.state = "executing"
         call.error = nil
         self:emit("call_state_changed", vim.deepcopy(call))
@@ -539,7 +561,7 @@ function Handler:run_call(call)
         return
       elseif #entries > 1 then
         call.context_retried = true
-        self:pick_table_context(call.connection_id, entries, { notify = true }, function(chosen_id)
+        self:pick_table_context(call.connection_id, entries, { notify = true, reveal = true }, function(chosen_id)
           if chosen_id then
             call.connection_id = chosen_id
             call.state = "executing"
@@ -593,6 +615,61 @@ function Handler:format_table_entry_label(entry)
   return ("%s · %s"):format(conn_name, entry.table)
 end
 
+function Handler:auto_context_change_summary(connection_id, entry)
+  local current_conn = self.connections[connection_id]
+  local target_connection_id = entry.connection_id or connection_id
+  local target_conn = self.connections[target_connection_id]
+  local summary = {}
+
+  if target_connection_id ~= connection_id then
+    summary.connection_from = current_conn and current_conn.name or connection_id
+    summary.connection_to = target_conn and target_conn.name or target_connection_id
+  end
+
+  local kind = target_conn and (target_conn.type or ""):lower() or ""
+  local database = entry.schema
+  if (kind == "mysql" or kind == "mariadb") and database and database ~= "" then
+    local current_db = target_conn and target_conn.database or ""
+    if current_db ~= database then
+      summary.database_from = current_db ~= "" and current_db or "(default)"
+      summary.database_to = database
+    end
+  end
+
+  if not summary.connection_from and not summary.database_from then
+    return nil
+  end
+
+  summary.target = self:format_table_entry_label(entry)
+  return summary
+end
+
+function Handler:confirm_mutating_auto_context_switch(connection_id, entry, query)
+  if not util.query_has_side_effects(query) then
+    return true
+  end
+
+  local summary = self:auto_context_change_summary(connection_id, entry)
+  if not summary then
+    return true
+  end
+
+  local lines = {
+    "This mutating query will automatically switch context.",
+  }
+  if summary.connection_from then
+    table.insert(lines, ("Connection: %s -> %s"):format(summary.connection_from, summary.connection_to))
+  end
+  if summary.database_from then
+    table.insert(lines, ("Database: %s -> %s"):format(summary.database_from, summary.database_to))
+  end
+  table.insert(lines, ("Target: %s"):format(summary.target))
+  table.insert(lines, "")
+  table.insert(lines, "Run query?")
+
+  return vim.fn.confirm(table.concat(lines, "\n"), "&Run\n&Cancel", 2) == 1
+end
+
 function Handler:pick_table_context(connection_id, entries, opts, on_done)
   local labels = vim.tbl_map(function(entry)
     return self:format_table_entry_label(entry)
@@ -632,7 +709,12 @@ function Handler:prepare_query_context(connection_id, query)
     return connection_id, nil
   end
   if #entries == 1 then
-    return self:apply_table_context(connection_id, entries[1], { notify = true }), nil
+    return self:apply_table_context(connection_id, entries[1], {
+      notify = true,
+      reveal = true,
+      confirm_mutating = true,
+      query = query,
+    }), nil
   end
   return nil, entries
 end
@@ -798,6 +880,13 @@ function Handler:apply_table_context(connection_id, entry, opts)
   local changed = false
   local database = entry.schema
 
+  if opts.confirm_mutating and not self:confirm_mutating_auto_context_switch(connection_id, entry, opts.query) then
+    if opts.notify then
+      util.notify("Canceled automatic context switch for mutating query.", vim.log.levels.INFO)
+    end
+    return false
+  end
+
   if entry.connection_id ~= connection_id then
     connection_id = entry.connection_id
     self:set_current_connection(connection_id)
@@ -817,11 +906,14 @@ function Handler:apply_table_context(connection_id, entry, opts)
     end
   end
 
-  if changed then
+  if changed or opts.reveal then
     self:emit("query_context_changed", {
       connection_id = connection_id,
       database = database,
       source_id = conn.source_id,
+      table = entry.table,
+      schema = entry.schema,
+      materialization = entry.materialization,
     })
   end
 
@@ -830,6 +922,9 @@ end
 
 function Handler:apply_query_context(connection_id, query)
   local resolved_id, entries = self:prepare_query_context(connection_id, query)
+  if resolved_id == false then
+    return false
+  end
   if entries then
     return connection_id
   end

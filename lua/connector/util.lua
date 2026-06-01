@@ -408,6 +408,29 @@ local SQL_KEYWORDS = {
   dual = true,
 }
 
+local MUTATING_SQL_KEYWORDS = {
+  insert = true,
+  update = true,
+  delete = true,
+  alter = true,
+  drop = true,
+  create = true,
+  truncate = true,
+  replace = true,
+  merge = true,
+  grant = true,
+  revoke = true,
+  comment = true,
+  rename = true,
+  call = true,
+  exec = true,
+  execute = true,
+  vacuum = true,
+  analyze = true,
+  reindex = true,
+  refresh = true,
+}
+
 function M.table_index_key(schema, tbl)
   if schema and schema ~= "" then
     return schema .. "\0" .. tbl
@@ -415,95 +438,130 @@ function M.table_index_key(schema, tbl)
   return tbl
 end
 
+function M.query_has_side_effects(query)
+  if not query or query == "" then
+    return false
+  end
+
+  local normalized = query
+    :gsub("/%*.-%*/", " ")
+    :gsub("%-%-[^\n]*", " ")
+    :gsub("#[^\n]*", " ")
+    :lower()
+
+  for keyword in pairs(MUTATING_SQL_KEYWORDS) do
+    if normalized:find("%f[%a]" .. keyword .. "%f[%A]") then
+      return true
+    end
+  end
+
+  return false
+end
+
 function M.parse_query_table_references(query)
   if not query or query == "" then
     return {}
   end
 
-  local refs = {}
+  local matches = {}
   local seen = {}
 
-  local function add(schema, tbl)
+  local function add(pos, schema, tbl)
     schema = schema ~= "" and schema or nil
     local key = M.table_index_key(schema, tbl)
     if seen[key] then
       return
     end
     seen[key] = true
-    table.insert(refs, { schema = schema, table = tbl })
+    table.insert(matches, {
+      pos = pos,
+      schema = schema,
+      table = tbl,
+    })
   end
 
-  local function add_unqualified(tbl)
+  local function add_unqualified(pos, tbl)
     if SQL_KEYWORDS[tbl:lower()] or tbl:find("%.") then
       return
     end
-    add(nil, tbl)
+    add(pos, nil, tbl)
   end
 
-  for schema, tbl in query:gmatch("`([^`]+)`%.`([^`]+)`") do
-    add(schema, tbl)
+  local function scan(pattern, callback)
+    local init = 1
+    while true do
+      local start_pos, end_pos, a, b = query:find(pattern, init)
+      if not start_pos then
+        break
+      end
+      callback(start_pos, a, b)
+      init = end_pos + 1
+    end
   end
 
-  for schema, tbl in query:gmatch('"([^"]+)"%."([^"]+)"') do
-    add(schema, tbl)
-  end
+  scan("`([^`]+)`%.`([^`]+)`", function(pos, schema, tbl)
+    add(pos, schema, tbl)
+  end)
+  scan('"([^"]+)"%."([^"]+)"', function(pos, schema, tbl)
+    add(pos, schema, tbl)
+  end)
+  scan("[Ff][Rr][Oo][Mm]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
+    add(pos, schema, tbl)
+  end)
+  scan("[Jj][Oo][Ii][Nn]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
+    add(pos, schema, tbl)
+  end)
+  scan("[Ii][Nn][Tt][Oo]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
+    add(pos, schema, tbl)
+  end)
+  scan("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
+    add(pos, schema, tbl)
+  end)
+  scan("[Ff][Rr][Oo][Mm]%s+`([^`]+)`", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan('[Ff][Rr][Oo][Mm]%s+"([^"]+)"', function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Ff][Rr][Oo][Mm]%s+([%w_%.]+)", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Jj][Oo][Ii][Nn]%s+`([^`]+)`", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan('[Jj][Oo][Ii][Nn]%s+"([^"]+)"', function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Jj][Oo][Ii][Nn]%s+([%w_%.]+)", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Ii][Nn][Tt][Oo]%s+`([^`]+)`", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Ii][Nn][Tt][Oo]%s+([%w_%.]+)", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Uu][Pp][Dd][Aa][Tt][Ee]%s+`([^`]+)`", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
+  scan("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_%.]+)", function(pos, tbl)
+    add_unqualified(pos, tbl)
+  end)
 
-  for schema, tbl in query:gmatch("[Ff][Rr][Oo][Mm]%s+([%w_]+)%.([%w_]+)") do
-    add(schema, tbl)
-  end
+  table.sort(matches, function(left, right)
+    if left.pos == right.pos then
+      return M.table_index_key(left.schema, left.table) < M.table_index_key(right.schema, right.table)
+    end
+    return left.pos < right.pos
+  end)
 
-  for schema, tbl in query:gmatch("[Jj][Oo][Ii][Nn]%s+([%w_]+)%.([%w_]+)") do
-    add(schema, tbl)
+  local refs = {}
+  for _, match in ipairs(matches) do
+    table.insert(refs, {
+      schema = match.schema,
+      table = match.table,
+    })
   end
-
-  for schema, tbl in query:gmatch("[Ii][Nn][Tt][Oo]%s+([%w_]+)%.([%w_]+)") do
-    add(schema, tbl)
-  end
-
-  for schema, tbl in query:gmatch("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_]+)%.([%w_]+)") do
-    add(schema, tbl)
-  end
-
-  for tbl in query:gmatch("[Ff][Rr][Oo][Mm]%s+`([^`]+)`") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch('[Ff][Rr][Oo][Mm]%s+"([^"]+)"') do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Ff][Rr][Oo][Mm]%s+([%w_]+)") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Jj][Oo][Ii][Nn]%s+`([^`]+)`") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch('[Jj][Oo][Ii][Nn]%s+"([^"]+)"') do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Jj][Oo][Ii][Nn]%s+([%w_]+)") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Ii][Nn][Tt][Oo]%s+`([^`]+)`") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Ii][Nn][Tt][Oo]%s+([%w_]+)") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Uu][Pp][Dd][Aa][Tt][Ee]%s+`([^`]+)`") do
-    add_unqualified(tbl)
-  end
-
-  for tbl in query:gmatch("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_]+)") do
-    add_unqualified(tbl)
-  end
-
   return refs
 end
 

@@ -172,7 +172,7 @@ builds it with Cargo and copies the binary into Neovim's data directory.
 - [X] DB tabgle でfzf-lua検索 左ナビ連動
 - [ ] リフレッシュボタン
 - [ ] ~結果からクエリを逆生成~ よく考えると不可能だし便利じゃない気がする
-- [ ] 自動DB選択は副作用があるものはconfirmを挟む
+- [x] 自動DB選択は副作用があるものはconfirmを挟む
 - [x] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)
   - [x] そのための保存領域を確保(sqlite？)
     - [x] ここまでやるならクエリ履歴のfzf-lua検索も欲しいよね(ソースとしてfzf-luaで使いやすいリストを出す関数を用意すればいいかな)
