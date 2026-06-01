@@ -64,16 +64,16 @@ require("connector").setup()
 
 require("blink.cmp").setup({
   sources = {
-    default = { "lsp", "path", "buffer" },
-    per_filetype = {
-      sql = { inherit_defaults = true, "connector" },
-    },
+    default = { "lsp", "path", "buffer", "connector" },
     providers = {
       connector = require("connector").blink_source(),
     },
   },
 })
 ```
+
+You do **not** need to specify a database in the blink config. The source reuses connector's existing
+connection/structure metadata and only enables itself in SQL buffers.
 
 The source completes:
 
