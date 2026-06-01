@@ -80,7 +80,13 @@ The source completes:
 - table names across configured connections, with connection / database context in the docs
 - columns for the current SQL statement when the table can be inferred from `FROM` / `JOIN` / aliases like `u.`
 
-Connection objects look like this:
+## Sources
+
+- `MemorySource`
+- `EnvSource`
+- `FileSource`
+
+A typical connection entry looks like this:
 
 ```lua
 {
@@ -92,12 +98,6 @@ Connection objects look like this:
 ```
 
 For PostgreSQL and MySQL use URL connection strings.
-
-## Sources
-
-- `MemorySource`
-- `EnvSource`
-- `FileSource`
 
 Example environment variable:
 
