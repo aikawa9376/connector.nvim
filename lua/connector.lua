@@ -9,6 +9,47 @@ local connector = {
   },
 }
 
+local blink_provider_keys = {
+  async = true,
+  enabled = true,
+  fallbacks = true,
+  get_completions = true,
+  kind = true,
+  max_items = true,
+  min_keyword_length = true,
+  module = true,
+  name = true,
+  opts = true,
+  resolve = true,
+  score_offset = true,
+  should_show_items = true,
+  timeout_ms = true,
+  transform_items = true,
+  trigger_characters = true,
+}
+
+local function has_top_level_blink_provider_overrides(opts)
+  for key in pairs(opts) do
+    if key ~= "provider" and key ~= "source" and blink_provider_keys[key] then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function top_level_blink_provider_overrides(opts)
+  local overrides = {}
+
+  for key, value in pairs(opts) do
+    if key ~= "provider" and key ~= "source" and blink_provider_keys[key] then
+      overrides[key] = value
+    end
+  end
+
+  return overrides
+end
+
 function connector.setup(cfg)
   local merged = config.merge_with_default(cfg)
   config.validate(merged)
@@ -78,8 +119,10 @@ end
 
 function connector.blink_source(opts)
   opts = opts or {}
-  local source_opts = opts.source or opts
+  local uses_provider_overrides = opts.source ~= nil or opts.provider ~= nil or has_top_level_blink_provider_overrides(opts)
   local provider_opts = opts.provider or {}
+  local source_opts = uses_provider_overrides and (opts.source or {}) or opts
+  local provider_overrides = top_level_blink_provider_overrides(opts)
 
   return vim.tbl_deep_extend("force", {
     name = "Connector",
@@ -87,7 +130,7 @@ function connector.blink_source(opts)
     async = true,
     min_keyword_length = 0,
     opts = source_opts,
-  }, provider_opts)
+  }, provider_overrides, provider_opts)
 end
 
 return connector

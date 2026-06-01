@@ -75,6 +75,17 @@ require("blink.cmp").setup({
 You do **not** need to specify a database in the blink config. The source reuses connector's existing
 connection/structure metadata and only enables itself in SQL buffers.
 
+You can override blink provider fields directly:
+
+```lua
+providers = {
+  connector = require("connector").blink_source({ name = "CO" }),
+}
+```
+
+If you need to pass connector-specific source options together with provider overrides, use
+`source = { ... }` / `provider = { ... }`.
+
 The source completes:
 
 - table names across configured connections, with connection / database context in the docs
