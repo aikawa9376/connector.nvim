@@ -94,6 +94,26 @@ end
 function Handler:register_event_listener(event, listener)
   self.listeners[event] = self.listeners[event] or {}
   table.insert(self.listeners[event], listener)
+  return function()
+    self:unregister_event_listener(event, listener)
+  end
+end
+
+function Handler:unregister_event_listener(event, listener)
+  local listeners = self.listeners[event]
+  if not listeners then
+    return
+  end
+
+  for index = #listeners, 1, -1 do
+    if listeners[index] == listener then
+      table.remove(listeners, index)
+    end
+  end
+
+  if #listeners == 0 then
+    self.listeners[event] = nil
+  end
 end
 
 function Handler:emit(event, payload)

@@ -1,3 +1,5 @@
+local window = require("connector.ui.window")
+
 local M = {}
 
 function M.editor(file, opts)
@@ -7,12 +9,6 @@ function M.editor(file, opts)
     on_save = nil,
   }, opts or {})
 
-  local ui = vim.api.nvim_list_uis()[1]
-  local width = math.max(40, math.min(ui.width - 8, math.floor(ui.width * 0.85)))
-  local height = math.max(10, math.min(ui.height - 4, math.floor(ui.height * 0.85)))
-  local col = math.floor((ui.width - width) / 2)
-  local row = math.floor((ui.height - height) / 2)
-
   local path = vim.fn.fnamemodify(file, ":p")
   local bufnr = vim.fn.bufadd(path)
   vim.fn.bufload(bufnr)
@@ -21,14 +17,8 @@ function M.editor(file, opts)
     vim.bo[bufnr].filetype = "json"
   end
 
-  local winid = vim.api.nvim_open_win(bufnr, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    col = col,
-    row = row,
+  local winid = window.open_centered(bufnr, true, {
     border = opts.border,
-    style = "minimal",
     title = opts.title,
     title_pos = "center",
     zindex = 150,

@@ -1,4 +1,5 @@
 local util = require("connector.util")
+local window = require("connector.ui.window")
 
 local EditorUI = {}
 
@@ -10,6 +11,9 @@ function EditorUI:new(handler, result, config, state_helpers)
     listeners = {},
     namespaces = {},
     note_order = {},
+    notes_by_id = {},
+    notes_by_buf = {},
+    notes_by_file = {},
     current_note_id = nil,
     window = nil,
     state_helpers = state_helpers or {},
@@ -42,6 +46,48 @@ function EditorUI:ensure_namespace(id)
   return self.namespaces[id]
 end
 
+function EditorUI:index_note(note)
+  self.notes_by_id[note.id] = note
+  self.notes_by_buf[note.bufnr] = note.id
+  self.notes_by_file[note.file] = note.id
+end
+
+function EditorUI:unindex_note(note)
+  if not note then
+    return
+  end
+
+  self.notes_by_id[note.id] = nil
+  if note.bufnr and self.notes_by_buf[note.bufnr] == note.id then
+    self.notes_by_buf[note.bufnr] = nil
+  end
+  if note.file and self.notes_by_file[note.file] == note.id then
+    self.notes_by_file[note.file] = nil
+  end
+end
+
+function EditorUI:append_note(note)
+  local ns = self:ensure_namespace(note.namespace)
+  table.insert(ns.order, note.id)
+  ns.notes[note.id] = note
+  table.insert(self.note_order, note.id)
+  self:index_note(note)
+  self.current_note_id = self.current_note_id or note.id
+  return note
+end
+
+function EditorUI:update_note_file(note, new_file)
+  if note.file and self.notes_by_file[note.file] == note.id then
+    self.notes_by_file[note.file] = nil
+  end
+  note.file = new_file
+  self.notes_by_file[new_file] = note.id
+
+  if vim.api.nvim_buf_is_valid(note.bufnr) then
+    pcall(vim.api.nvim_buf_set_name, note.bufnr, new_file)
+  end
+end
+
 function EditorUI:create_buf(file)
   local bufnr = vim.fn.bufadd(file)
   vim.fn.bufload(bufnr)
@@ -64,50 +110,36 @@ function EditorUI:load_notes()
   for _, file in ipairs(paths) do
     local rel_dir = vim.fs.dirname(file):sub(root_len + 2)
     local namespace = rel_dir ~= "" and rel_dir or "global"
-    local ns = self:ensure_namespace(namespace)
     local id = util.random_id("note")
     local name = vim.fs.basename(file):gsub("%.sql$", "")
-    local note = {
+    self:append_note({
       id = id,
       name = name,
       file = file,
       bufnr = self:create_buf(file),
       namespace = namespace,
-    }
-    table.insert(ns.order, id)
-    ns.notes[id] = note
-    table.insert(self.note_order, id)
-    self.current_note_id = self.current_note_id or id
+    })
   end
 end
 
 function EditorUI:search_note(id)
-  for namespace, ns in pairs(self.namespaces) do
-    if ns.notes[id] then
-      return ns.notes[id], namespace
-    end
+  local note = self.notes_by_id[id]
+  if note then
+    return note, note.namespace
   end
 end
 
 function EditorUI:search_note_with_buf(bufnr)
-  for namespace, ns in pairs(self.namespaces) do
-    for _, id in ipairs(ns.order) do
-      local note = ns.notes[id]
-      if note.bufnr == bufnr then
-        return note, namespace
-      end
-    end
+  local note_id = self.notes_by_buf[bufnr]
+  if note_id then
+    return self:search_note(note_id)
   end
 end
 
 function EditorUI:search_note_with_file(file)
-  for namespace, ns in pairs(self.namespaces) do
-    for _, id in ipairs(ns.order) do
-      local note = ns.notes[id]
-      if note.file == file then
-        return note, namespace
-      end
-    end
+  local note_id = self.notes_by_file[file]
+  if note_id then
+    return self:search_note(note_id)
   end
 end
 
@@ -122,16 +154,13 @@ function EditorUI:namespace_create_note(id, name)
   local file = util.joinpath(self:namespace_dir(id), slug .. ".sql")
   util.write_file(file, "")
   local note_id = util.random_id("note")
-  local note = {
+  local note = self:append_note({
     id = note_id,
     name = name,
     file = file,
     bufnr = self:create_buf(file),
     namespace = id,
-  }
-  table.insert(ns.order, note_id)
-  table.insert(self.note_order, note_id)
-  ns.notes[note_id] = note
+  })
   self.current_note_id = note_id
   self:emit("notes_changed", note)
 
@@ -179,6 +208,7 @@ function EditorUI:namespace_remove_note(id, note_id)
   self.note_order = vim.tbl_filter(function(value)
     return value ~= note_id
   end, self.note_order)
+  self:unindex_note(note)
   if self.current_note_id == note_id then
     self.current_note_id = self.note_order[1]
   end
@@ -193,9 +223,49 @@ function EditorUI:note_rename(id, name)
   local new_file = util.joinpath(self:namespace_dir(namespace), util.slugify(name) .. ".sql")
   os.rename(note.file, new_file)
   note.name = name
-  note.file = new_file
-  vim.api.nvim_buf_set_name(note.bufnr, new_file)
+  self:update_note_file(note, new_file)
   self:emit("notes_changed", note)
+end
+
+function EditorUI:current_project()
+  local state_project = self.state_helpers and self.state_helpers.get_current_project and self.state_helpers.get_current_project()
+  return state_project or util.resolve_project()
+end
+
+function EditorUI:resolve_active_namespace(project)
+  if not project or not project.name or project.name == "" then
+    return "global"
+  end
+
+  local branch = project.branch or (project.root and util.get_git_branch(project.root)) or "main"
+  local default_namespace = project.name .. "/" .. branch
+  if not project.root then
+    return default_namespace
+  end
+
+  local mapped = util.get_project_mapping(project.root)
+  if mapped and self.namespaces[mapped] then
+    return mapped
+  end
+
+  local prefix = project.name .. "/"
+  local fallback = nil
+  for _, namespace in ipairs(self:get_namespaces()) do
+    if namespace == default_namespace then
+      util.set_project_mapping(project.root, namespace)
+      return namespace
+    end
+    if not fallback and namespace:sub(1, #prefix) == prefix then
+      fallback = namespace
+    end
+  end
+
+  if fallback then
+    util.set_project_mapping(project.root, fallback)
+    return fallback
+  end
+
+  return default_namespace
 end
 
 function EditorUI:get_current_note()
@@ -218,42 +288,8 @@ function EditorUI:set_current_note(id)
 end
 
 function EditorUI:ensure_default_note()
-  -- Prefer the saved state project (which may include root info) when available,
-  -- otherwise fall back to resolving from the current buffer.
-  local state_project = self.state_helpers and self.state_helpers.get_current_project and self.state_helpers.get_current_project()
-  local resolved_project = util.resolve_project()
-  local project = state_project or resolved_project
-
-  local ns = "global"
-  if project then
-    local branch = project.branch or (project.root and util.get_git_branch(project.root)) or "main"
-    ns = project.name .. "/" .. branch
-
-    -- If project has a root, prefer any persisted mapping for that root
-    if project.root then
-      local mapped = util.get_project_mapping(project.root)
-      if mapped and self.namespaces[mapped] then
-        ns = mapped
-      else
-        -- Look for existing namespaces that match the project name (e.g., after rename)
-        local candidates = {}
-        for _, name in ipairs(self:get_namespaces()) do
-          if name:match("^" .. project.name .. "/") then
-            table.insert(candidates, name)
-          end
-        end
-        if #candidates > 0 then
-          local preferred = nil
-          for _, c in ipairs(candidates) do
-            if c == project.name .. "/" .. branch then preferred = c; break end
-          end
-          preferred = preferred or candidates[1]
-          ns = preferred
-          util.set_project_mapping(project.root, preferred)
-        end
-      end
-    end
-  end
+  local project = self:current_project()
+  local ns = self:resolve_active_namespace(project)
 
   local notes = self:namespace_get_notes(ns)
   if #notes == 0 then
@@ -271,12 +307,9 @@ function EditorUI:ensure_default_note()
 
   -- If the current note belongs to a different project than the resolved project,
   -- prefer the resolved project note when available.
-  if project then
-    local current_project_name = vim.split(current.namespace, "/")[1]
-    if current_project_name ~= project.name then
-      self:set_current_note(notes[1].id)
-      return
-    end
+  if current and current.namespace ~= ns then
+    self:set_current_note(notes[1].id)
+    return
   end
 
   -- Fallback to selecting a note if none selected
@@ -454,13 +487,6 @@ function EditorUI:do_action(action)
       return
     end
 
-    -- Create ephemeral buffer and float window (styled like ResultUI)
-    local ui = vim.api.nvim_list_uis()[1]
-    local width = math.max(40, math.min(ui.width - 8, math.floor(ui.width * 0.85)))
-    local height = math.max(10, math.min(ui.height - 4, math.floor(ui.height * 0.85)))
-    local col = math.floor((ui.width - width) / 2)
-    local row = math.floor((ui.height - height) / 2)
-
     local res_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[res_buf].bufhidden = "wipe"
     vim.bo[res_buf].filetype = "connector-result"
@@ -469,62 +495,83 @@ function EditorUI:do_action(action)
     vim.api.nvim_buf_set_lines(res_buf, 0, -1, false, { "Running query..." })
     vim.api.nvim_buf_set_option(res_buf, "modifiable", false)
 
-    local winid = vim.api.nvim_open_win(res_buf, true, {
-      relative = "editor",
-      width = width,
-      height = height,
-      col = col,
-      row = row,
+    local winid = window.open_centered(res_buf, true, {
       border = "rounded",
-      style = "minimal",
       zindex = 150,
     })
+    window.configure_result_window(winid)
 
-    -- Make sure float doesn't wrap and looks like the result window
-    pcall(vim.api.nvim_win_set_option, winid, "wrap", false)
-    pcall(vim.api.nvim_win_set_option, winid, "sidescroll", 1)
-    pcall(vim.api.nvim_win_set_option, winid, "sidescrolloff", 5)
-    pcall(vim.api.nvim_win_set_option, winid, "number", false)
-    pcall(vim.api.nvim_win_set_option, winid, "relativenumber", false)
+    local dispose_listener = nil
+    local active_call_id = nil
+    local finalized = false
 
-    -- Apply same delimiter match as ResultUI (window-local)
-    local curwin = vim.api.nvim_get_current_win()
-    pcall(vim.api.nvim_set_current_win, winid)
-    pcall(vim.cmd, [[match Delimiter /^\s*\d\\+|─|│|┼/]])
-    if vim.api.nvim_win_is_valid(curwin) then
-      pcall(vim.api.nvim_set_current_win, curwin)
-    end
-
-    vim.keymap.set("n", "q", function() pcall(vim.api.nvim_win_close, winid, true) end, { buffer = res_buf, silent = true })
-
-    -- Register listener to write results when call is completed (also reapply match)
-    local function on_call_state(payload)
-      if not payload or not payload.id then return end
-      if payload.state == "archived" then
-        pcall(function()
-          self.handler:call_store_result(payload.id, "table", "buffer", { extra_arg = res_buf })
-          if vim.api.nvim_win_is_valid(winid) then
-            local cur = vim.api.nvim_get_current_win()
-            pcall(vim.api.nvim_set_current_win, winid)
-            pcall(vim.cmd, [[match Delimiter /^\s*\d\\+|─|│|┼/]])
-            pcall(vim.api.nvim_set_current_win, cur)
-          end
-        end)
+    local function cleanup_listener()
+      if dispose_listener then
+        dispose_listener()
+        dispose_listener = nil
       end
     end
-    self.handler:register_event_listener("call_state_changed", on_call_state)
+
+    local function render_status(message)
+      util.buf_set_lines(res_buf, { message })
+    end
+
+    local function render_result(call_id)
+      if finalized then
+        return
+      end
+
+      finalized = true
+      cleanup_listener()
+      pcall(function()
+        self.handler:call_store_result(call_id, "table", "buffer", { extra_arg = res_buf })
+      end)
+      window.apply_result_delimiter_highlight(winid)
+    end
+
+    local function close()
+      cleanup_listener()
+      pcall(vim.api.nvim_win_close, winid, true)
+    end
+
+    vim.keymap.set("n", "q", close, { buffer = res_buf, silent = true })
+    vim.api.nvim_create_autocmd("BufWipeout", {
+      buffer = res_buf,
+      once = true,
+      callback = cleanup_listener,
+    })
+
+    local function on_call_state(payload)
+      if not active_call_id or not payload or payload.id ~= active_call_id then
+        return
+      end
+
+      if payload.state == "archived" then
+        render_result(payload.id)
+      elseif payload.state == "failed" then
+        cleanup_listener()
+        render_status(payload.error or "Query failed.")
+      elseif payload.state == "canceled" then
+        cleanup_listener()
+        render_status("Query canceled.")
+      end
+    end
+
+    dispose_listener = self.handler:register_event_listener("call_state_changed", on_call_state)
 
     self.handler:connection_execute(conn.id, query, function(call)
-      if call and call.state == "archived" then
-        pcall(function()
-          self.handler:call_store_result(call.id, "table", "buffer", { extra_arg = res_buf })
-          if vim.api.nvim_win_is_valid(winid) then
-            local cur = vim.api.nvim_get_current_win()
-            pcall(vim.api.nvim_set_current_win, winid)
-            pcall(vim.cmd, [[match Delimiter /^\s*\d\\+|─|│|┼/]])
-            pcall(vim.api.nvim_set_current_win, cur)
-          end
-        end)
+      if not call then
+        cleanup_listener()
+        render_status("Query canceled.")
+        return
+      end
+
+      active_call_id = call.id
+      if call.state == "archived" then
+        render_result(call.id)
+      elseif call.state == "failed" then
+        cleanup_listener()
+        render_status(call.error or "Query failed.")
       end
     end)
   end
@@ -573,10 +620,7 @@ function EditorUI:namespace_rename(id, new_id)
     if note then
       local new_file = util.joinpath(new_dir, info.basename)
       note.namespace = new_id
-      note.file = new_file
-      if vim.api.nvim_buf_is_valid(note.bufnr) then
-        pcall(vim.api.nvim_buf_set_name, note.bufnr, new_file)
-      end
+      self:update_note_file(note, new_file)
       table.insert(target_ns.order, info.id)
       target_ns.notes[info.id] = note
     end

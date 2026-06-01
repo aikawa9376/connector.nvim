@@ -5,6 +5,7 @@ local util = require("connector.util")
 local function dbg() end
 
 local DrawerUI = {}
+local GENERATE_ACTIONS = { "Select", "Update", "Delete", "Insert" }
 
 function DrawerUI:new(handler, editor, result, config, state_helpers)
   local bufnr = vim.api.nvim_create_buf(false, true)
@@ -35,28 +36,7 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
   util.apply_buffer_mappings(bufnr, config.mappings, function(action)
     o:do_action(action)
   end)
-
-  -- Visual-mode <CR> wrapper: capture visual marks immediately then call action_1.
-  -- This preserves visual selection for query generation (marks can be cleared by other UI calls).
-  vim.keymap.set('v', '<CR>', function()
-    -- Exit visual mode synchronously to ensure '< and '>' marks are set.
-    local esc = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
-    vim.cmd('normal! ' .. esc)
-    local s = vim.fn.getpos("'<")[2]
-    local e = vim.fn.getpos("'>")[2]
-    dbg(("visual-cr (new) fired: s=%s e=%s mode=%s"):format(tostring(s), tostring(e), vim.fn.mode()))
-    if s and e and s ~= 0 and e ~= 0 then
-      o._explicit_visual_range = { start_row = s, end_row = e }
-      dbg(("visual-cr (new) stored explicit range: %s..%s"):format(tostring(s), tostring(e)))
-    else
-      o._explicit_visual_range = nil
-      dbg("visual-cr (new) no range to store")
-    end
-    -- invoke the normal action_1 handler
-    o:do_action('action_1')
-    -- clear stored range shortly after to avoid leaking state
-    vim.schedule(function() o._explicit_visual_range = nil end)
-  end, { buffer = bufnr, nowait = true, silent = true })
+  o:setup_enter_mappings()
 
   handler:register_event_listener("connections_changed", function()
     o:refresh()
@@ -76,6 +56,45 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
   end)
 
   return o
+end
+
+function DrawerUI:capture_visual_range()
+  local start_row = vim.fn.getpos("'<")[2]
+  local end_row = vim.fn.getpos("'>")[2]
+
+  if start_row and end_row and start_row ~= 0 and end_row ~= 0 then
+    self._explicit_visual_range = {
+      start_row = start_row,
+      end_row = end_row,
+    }
+  else
+    self._explicit_visual_range = nil
+  end
+end
+
+function DrawerUI:run_primary_action(leave_visual_mode)
+  if leave_visual_mode then
+    local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+    vim.cmd("normal! " .. esc)
+  end
+
+  self:capture_visual_range()
+  self:do_action("action_1")
+  vim.schedule(function()
+    self._explicit_visual_range = nil
+  end)
+end
+
+function DrawerUI:setup_enter_mappings()
+  local opts = { buffer = self.bufnr, nowait = true, silent = true }
+
+  vim.keymap.set({ "v", "x" }, "<CR>", function()
+    self:run_primary_action(true)
+  end, opts)
+
+  vim.keymap.set("n", "<CR>", function()
+    self:run_primary_action(false)
+  end, opts)
 end
 
 function DrawerUI:expand_query_context(payload)
@@ -106,43 +125,7 @@ function DrawerUI:show(winid)
   util.apply_buffer_mappings(self.bufnr, self.config.mappings, function(action)
     self:do_action(action)
   end)
-
-  -- Ensure visual <CR> wrapper mapping persists (apply_buffer_mappings may overwrite it).
-  -- Capture visual marks immediately and call the standard action_1 handler.
-  vim.keymap.set({'v', 'x'}, '<CR>', function()
-    -- Exit visual mode synchronously to ensure '< and '>' marks are set.
-    local esc = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
-    vim.cmd('normal! ' .. esc)
-    local s = vim.fn.getpos("'<")[2]
-    local e = vim.fn.getpos("'>")[2]
-    dbg(("visual-cr (show) fired: s=%s e=%s mode=%s"):format(tostring(s), tostring(e), vim.fn.mode()))
-    if s and e and s ~= 0 and e ~= 0 then
-      self._explicit_visual_range = { start_row = s, end_row = e }
-      dbg(("visual-cr (show) stored explicit range: %s..%s"):format(tostring(s), tostring(e)))
-    else
-      self._explicit_visual_range = nil
-      dbg("visual-cr (show) no range to store")
-    end
-    self:do_action('action_1')
-    vim.schedule(function() self._explicit_visual_range = nil end)
-  end, { buffer = self.bufnr, nowait = true, silent = true })
-
-  -- Also wrap normal-mode <CR> so that pressing Enter right after leaving visual mode
-  -- (or if visual marks persist) still captures the last visual selection.
-  vim.keymap.set('n', '<CR>', function()
-    local s = vim.fn.getpos("'<")[2]
-    local e = vim.fn.getpos("'>")[2]
-    dbg(("enter-cr (n) fired: s=%s e=%s mode=%s"):format(tostring(s), tostring(e), vim.fn.mode()))
-    if s and e and s ~= 0 and e ~= 0 then
-      self._explicit_visual_range = { start_row = s, end_row = e }
-      dbg(("enter-cr (n) stored explicit range: %s..%s"):format(tostring(s), tostring(e)))
-    else
-      self._explicit_visual_range = nil
-      dbg("enter-cr (n) no range to store")
-    end
-    self:do_action('action_1')
-    vim.schedule(function() self._explicit_visual_range = nil end)
-  end, { buffer = self.bufnr, nowait = true, silent = true })
+  self:setup_enter_mappings()
 
   self:refresh()
 end
@@ -432,57 +415,72 @@ function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ig
   end
 end
 
-function DrawerUI:table_action(node)
-  -- Allow generating queries (select/update/delete/insert) targeting selected columns
-  self.handler:set_current_connection(node.connection_id)
+function DrawerUI:execute_query(connection_id, query)
+  if not query or query == "" then
+    return
+  end
+
+  local ok, err = pcall(function()
+    self.handler:connection_execute(connection_id, query, function(call)
+      if call then
+        self.result:set_call(call)
+      end
+    end)
+  end)
+  if not ok then
+    util.notify(err, vim.log.levels.ERROR)
+  end
+end
+
+function DrawerUI:query_action_items(node)
   local helpers = self.handler:connection_get_helpers(node.connection_id, {
     table = node.table,
     schema = node.schema,
     materialization = node.materialization,
   })
 
-  -- Top-level generate actions
-  local generate_actions = { "Select", "Update", "Delete", "Insert" }
-  local helper_names = util.table_keys_sorted(helpers)
-
-  local items = {}
-  for _, a in ipairs(generate_actions) do table.insert(items, a) end
+  local items = vim.deepcopy(GENERATE_ACTIONS)
   table.insert(items, "Query History")
-  for _, h in ipairs(helper_names) do table.insert(items, h) end
+  for _, helper_name in ipairs(util.table_keys_sorted(helpers)) do
+    table.insert(items, helper_name)
+  end
 
-  -- Capture visual selection now (before the prompt steals it)
+  return helpers, items
+end
+
+function DrawerUI:open_query_action_menu(node, opts)
+  opts = opts or {}
+  if opts.set_current_connection then
+    self.handler:set_current_connection(node.connection_id)
+  end
+
+  local helpers, items = self:query_action_items(node)
   local visual_cols = self:get_selected_columns_from_visual(node)
 
   vim.ui.select(items, { prompt = "Select action" }, function(choice, idx)
-    if not choice or not idx then return end
+    if not choice or not idx then
+      return
+    end
 
     if choice == "Query History" then
       self:table_history_action(node)
       return
     end
 
-    -- If user picked a built-in helper (e.g., List/Columns), execute it as before
     if helpers[choice] then
-      local query = helpers[choice]
-      if not query or query == "" then return end
-      local ok, err = pcall(function()
-        self.handler:connection_execute(node.connection_id, query, function(call)
-          if call then
-            self.result:set_call(call)
-          end
-        end)
-      end)
-      if not ok then util.notify(err, vim.log.levels.ERROR) end
+      self:execute_query(node.connection_id, helpers[choice])
       return
     end
 
-    -- Otherwise it's one of the generate actions
     local action = choice:lower()
     if action == "select" or action == "update" or action == "delete" or action == "insert" then
       self:generate_query_for_table(node, action, visual_cols)
-      return
     end
   end)
+end
+
+function DrawerUI:table_action(node)
+  self:open_query_action_menu(node, { set_current_connection = true })
 end
 
 function DrawerUI:table_history_action(node)
@@ -521,11 +519,7 @@ function DrawerUI:table_history_action(node)
     if not entry or not entry.query or entry.query == "" then
       return
     end
-    self.handler:connection_execute(entry.connection_id or node.connection_id, entry.query, function(call)
-      if call then
-        self.result:set_call(call)
-      end
-    end)
+    self:execute_query(entry.connection_id or node.connection_id, entry.query)
   end)
 end
 
@@ -558,6 +552,35 @@ function DrawerUI:insert_query(text)
     local new_line = vim.api.nvim_buf_line_count(bufnr)
     pcall(vim.api.nvim_win_set_cursor, self.editor.window, { new_line, 0 })
   end
+end
+
+function DrawerUI:prompt_add_connection()
+  local sources = self.handler:get_sources()
+  local creatable = {}
+  for _, source in ipairs(sources) do
+    if type(source.create) == "function" then
+      table.insert(creatable, source:name())
+    end
+  end
+
+  if #creatable == 0 then
+    util.notify("No sources support adding connections.", vim.log.levels.WARN)
+    return
+  end
+
+  vim.ui.select(creatable, { prompt = "Select source to add connection:" }, function(choice)
+    if not choice then
+      return
+    end
+
+    self:connection_prompt({}, function(details)
+      local ok, err = pcall(self.handler.source_add_connection, self.handler, choice, details)
+      if not ok then
+        util.notify(err, vim.log.levels.ERROR)
+      end
+      self:refresh()
+    end)
+  end)
 end
 
 -- Helpers for generating queries from table/column selection
@@ -949,65 +972,16 @@ function DrawerUI:refresh()
   if self:is_expanded("root:scratchpads") then
     local all_namespaces = self.editor:get_namespaces()
     local current_note = self.editor:get_current_note()
-
-    local state_project = self.state_helpers.get_current_project and self.state_helpers.get_current_project() or nil
-    local current_project = state_project
-
-    -- Determine the full namespace to expand (prefer persisted mapping when available)
     local active_namespace = nil
-    local active_project_name = nil
+    local current_project = self:current_project()
     if current_project then
-      -- Try persisted mapping first
-      if current_project.root and util.get_project_mapping then
-        local mapped_ns = util.get_project_mapping(current_project.root)
-        if mapped_ns and vim.tbl_contains(self.editor:get_namespaces(), mapped_ns) then
-          active_namespace = mapped_ns
-        end
-      end
-
-      if not active_namespace then
-        -- Prefer exact branch match when possible, otherwise try to find any namespace matching the project name
-        local branch = nil
-        branch = current_project.branch or (current_project.root and util.get_git_branch(current_project.root)) or nil
-        local ns_list = self.editor:get_namespaces()
-        if branch then
-          local desired = current_project.name .. "/" .. branch
-          for _, n in ipairs(ns_list) do
-            if n == desired then
-              active_namespace = n
-              break
-            end
-          end
-        end
-
-        -- If still not found, search for any namespace that starts with the project name
-        if not active_namespace then
-          local prefix = current_project.name .. "/"
-          local candidate = nil
-          for _, n in ipairs(ns_list) do
-            if n:sub(1, #prefix) == prefix then
-              candidate = candidate or n
-            end
-          end
-          if candidate then
-            active_namespace = candidate
-            -- persist mapping for next time
-            if current_project.root then
-              util.set_project_mapping(current_project.root, candidate)
-            end
-          else
-            -- fallback to constructed namespace
-            if current_project.root then
-              active_namespace = current_project.name .. "/" .. (branch or "main")
-            else
-              active_namespace = current_project.name
-            end
-          end
-        end
-      end
-
-      active_project_name = vim.split(active_namespace, "/")[1]
+      active_namespace = self.editor:resolve_active_namespace(current_project)
+    elseif current_note then
+      active_namespace = current_note.namespace
+    else
+      active_namespace = self.last_active_namespace
     end
+    local active_project_name = active_namespace and vim.split(active_namespace, "/")[1] or nil
 
     -- Auto-expand current project path (use full namespace if available)
     if active_namespace then
@@ -1233,25 +1207,7 @@ function DrawerUI:do_action(action)
       end
 
       -- Otherwise (e.g. root:connections or ignored group), ask the user which source to add to
-      local sources = self.handler:get_sources()
-      local creatable = {}
-      for _, s in ipairs(sources) do
-        if type(s.create) == "function" then
-          table.insert(creatable, s:name())
-        end
-      end
-      if #creatable == 0 then
-        util.notify("No sources support adding connections.", vim.log.levels.WARN)
-        return
-      end
-      vim.ui.select(creatable, { prompt = "Select source to add connection:" }, function(choice)
-        if not choice then return end
-        self:connection_prompt({}, function(details)
-          local ok, err = pcall(self.handler.source_add_connection, self.handler, choice, details)
-          if not ok then util.notify(err, vim.log.levels.ERROR) end
-          self:refresh()
-        end)
-      end)
+      self:prompt_add_connection()
       return
     end
 
@@ -1275,47 +1231,7 @@ function DrawerUI:do_action(action)
     if node.kind == "table" then
       self:table_action(node)
     elseif node.kind == "column" then
-      -- Show generate/select menu for the column (or visual selection of columns)
-      local helpers = self.handler:connection_get_helpers(node.connection_id, {
-        table = node.table,
-        schema = node.schema,
-        materialization = node.materialization,
-      })
-      local generate_actions = { "Select", "Update", "Delete", "Insert" }
-      local helper_names = util.table_keys_sorted(helpers)
-
-      local items = {}
-      for _, a in ipairs(generate_actions) do table.insert(items, a) end
-      table.insert(items, "Query History")
-      for _, h in ipairs(helper_names) do table.insert(items, h) end
-
-      -- Capture visual selection now (before the prompt steals it)
-      local visual_cols = self:get_selected_columns_from_visual(node)
-
-      vim.ui.select(items, { prompt = "Select action" }, function(choice, idx)
-        if not choice or not idx then return end
-        if choice == "Query History" then
-          self:table_history_action(node)
-          return
-        end
-        if helpers[choice] then
-          local query = helpers[choice]
-          if not query or query == "" then return end
-          local ok, err = pcall(function()
-            self.handler:connection_execute(node.connection_id, query, function(call)
-              if call then self.result:set_call(call) end
-            end)
-          end)
-          if not ok then util.notify(err, vim.log.levels.ERROR) end
-          return
-        end
-        local action = choice:lower()
-        if action == "select" or action == "update" or action == "delete" or action == "insert" then
-          -- Use captured visual selection (if any), otherwise fallback to clicked column behavior within generator
-          self:generate_query_for_table(node, action, visual_cols)
-          return
-        end
-      end)
+      self:open_query_action_menu(node)
     elseif node.kind == "database" then
       self.handler:set_current_connection(node.connection_id)
       self.handler:connection_select_database(node.connection_id, node.database)

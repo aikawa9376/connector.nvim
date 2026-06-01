@@ -1,4 +1,5 @@
 local format = require("connector.format")
+local window = require("connector.ui.window")
 local util = require("connector.util")
 
 local ResultUI = {}
@@ -59,23 +60,12 @@ end
 function ResultUI:show(winid)
   self.window = winid
   vim.api.nvim_win_set_buf(winid, self.bufnr)
-  vim.wo[winid].wrap = false
-  vim.wo[winid].number = false
-  vim.wo[winid].relativenumber = false
-  self:apply_highlight()
+  window.configure_result_window(winid)
   self:refresh()
 end
 
 function ResultUI:apply_highlight()
-  if not self.window or not vim.api.nvim_win_is_valid(self.window) then
-    return
-  end
-  local current_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_set_current_win(self.window)
-  vim.cmd([[match Delimiter /^\s*\d\+\|─\|│\|┼/]])
-  if current_win ~= self.window and vim.api.nvim_win_is_valid(current_win) then
-    vim.api.nvim_set_current_win(current_win)
-  end
+  window.apply_result_delimiter_highlight(self.window)
 end
 
 function ResultUI:update_winbar(call, total_rows)

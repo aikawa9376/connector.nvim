@@ -3,6 +3,7 @@ local DrawerUI = require("connector.ui.drawer")
 local EditorUI = require("connector.ui.editor")
 local Handler = require("connector.handler")
 local ResultUI = require("connector.ui.result")
+local window = require("connector.ui.window")
 local util = require("connector.util")
 
 local M = {}
@@ -71,13 +72,7 @@ local function setup_ui()
   vim.api.nvim_create_autocmd("FileType", {
     pattern = "connector-result",
     callback = function()
-      local win = vim.api.nvim_get_current_win()
-      pcall(vim.api.nvim_win_set_option, win, "wrap", false)
-      pcall(vim.api.nvim_win_set_option, win, "sidescroll", 1)
-      pcall(vim.api.nvim_win_set_option, win, "sidescrolloff", 5)
-      pcall(vim.api.nvim_win_set_option, win, "number", false)
-      pcall(vim.api.nvim_win_set_option, win, "relativenumber", false)
-      pcall(vim.cmd, [[match Delimiter /^\s*\d\+\|─\|│\|┼/]])
+      window.configure_result_window(vim.api.nvim_get_current_win())
     end,
   })
 
