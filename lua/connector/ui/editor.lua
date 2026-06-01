@@ -97,9 +97,6 @@ function EditorUI:create_buf(file)
     self:do_action(action)
   end)
 
-  -- Simple omnifunc for table-name completion
-  vim.bo[bufnr].omnifunc = 'v:lua.require("connector.completion").omnifunc'
-
   return bufnr
 end
 

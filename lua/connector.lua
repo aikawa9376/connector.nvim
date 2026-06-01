@@ -76,4 +76,18 @@ function connector.install()
   return backend.install(api.current_config() or config.default())
 end
 
+function connector.blink_source(opts)
+  opts = opts or {}
+  local source_opts = opts.source or opts
+  local provider_opts = opts.provider or {}
+
+  return vim.tbl_deep_extend("force", {
+    name = "Connector",
+    module = "connector.blink",
+    async = true,
+    min_keyword_length = 0,
+    opts = source_opts,
+  }, provider_opts)
+end
+
 return connector

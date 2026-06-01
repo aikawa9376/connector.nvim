@@ -55,6 +55,31 @@ require("connector").setup({
 })
 ```
 
+## blink.cmp
+
+`connector.nvim` now exposes a blink.cmp source instead of wiring `omnifunc` into scratchpads.
+
+```lua
+require("connector").setup()
+
+require("blink.cmp").setup({
+  sources = {
+    default = { "lsp", "path", "buffer" },
+    per_filetype = {
+      sql = { inherit_defaults = true, "connector" },
+    },
+    providers = {
+      connector = require("connector").blink_source(),
+    },
+  },
+})
+```
+
+The source completes:
+
+- table names across configured connections, with connection / database context in the docs
+- columns for the current SQL statement when the table can be inferred from `FROM` / `JOIN` / aliases like `u.`
+
 Connection objects look like this:
 
 ```lua
@@ -142,7 +167,7 @@ builds it with Cargo and copies the binary into Neovim's data directory.
     - [x] ignoreグループからiでもとにもどせる
 - [x] スクラッチのテーブル名から左ナビひらく(gdとかで定義元いくイメージ)
 - [x] 一時ウインドウ(フロート？)でのクエリ実行
-- [ ] 補完ソース
+- [x] 補完ソース
 - [ ] スクラッチファイルのfzf-lua検索
 - [X] DB tabgle でfzf-lua検索 左ナビ連動
 - [ ] リフレッシュボタン
