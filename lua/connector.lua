@@ -9,37 +9,10 @@ local connector = {
   },
 }
 
-local function register_blink_source(opts)
-  local ok, cmp = pcall(require, "blink.cmp")
-  if not ok then
-    return false
-  end
-
-  local source_config = connector.blink_source(opts)
-  local ok_provider, provider_err = pcall(cmp.add_source_provider, "connector", source_config)
-  if not ok_provider and not tostring(provider_err):match("already exists") then
-    vim.schedule(function()
-      vim.notify(("connector.nvim: failed to register blink provider: %s"):format(provider_err), vim.log.levels.WARN)
-    end)
-    return false
-  end
-
-  local ok_filetype, filetype_err = pcall(cmp.add_filetype_source, "sql", "connector")
-  if not ok_filetype and not tostring(filetype_err):match("already exists") then
-    vim.schedule(function()
-      vim.notify(("connector.nvim: failed to enable blink source for sql: %s"):format(filetype_err), vim.log.levels.WARN)
-    end)
-    return false
-  end
-
-  return true
-end
-
 function connector.setup(cfg)
   local merged = config.merge_with_default(cfg)
   config.validate(merged)
   api.setup(merged)
-  register_blink_source()
 end
 
 function connector.open()
@@ -115,10 +88,6 @@ function connector.blink_source(opts)
     min_keyword_length = 0,
     opts = source_opts,
   }, provider_opts)
-end
-
-function connector.register_blink_source(opts)
-  return register_blink_source(opts)
 end
 
 return connector
