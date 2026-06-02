@@ -27,6 +27,8 @@ function ResultUI:new(handler, config)
     line_map = {},
     cell_map = {},
     editor = nil,
+    disposed = false,
+    dispose_call_state_listener = nil,
   }
   setmetatable(o, self)
   self.__index = self
@@ -35,7 +37,7 @@ function ResultUI:new(handler, config)
     o:do_action(action)
   end)
 
-  handler:register_event_listener("call_state_changed", function(call)
+  o.dispose_call_state_listener = handler:register_event_listener("call_state_changed", function(call)
     if o.current_call_id == call.id then
       o:refresh()
       if call.state == "archived" and o.config.focus_result and o.window and vim.api.nvim_win_is_valid(o.window) then
@@ -253,6 +255,20 @@ function ResultUI:close_editor()
     vim.api.nvim_win_close(self.editor.win, true)
   end
   self.editor = nil
+end
+
+function ResultUI:destroy()
+  if self.disposed then
+    return
+  end
+
+  self.disposed = true
+  self:close_editor()
+  if self.dispose_call_state_listener then
+    self.dispose_call_state_listener()
+    self.dispose_call_state_listener = nil
+  end
+  self.window = nil
 end
 
 function ResultUI:edit_cell()

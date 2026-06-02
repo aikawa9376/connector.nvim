@@ -1,13 +1,15 @@
 local util = require("connector.util")
 local window = require("connector.ui.window")
+local batch_result_tab = require("connector.ui.batch_result_tab")
 
 local EditorUI = {}
 
-function EditorUI:new(handler, result, config, state_helpers)
+function EditorUI:new(handler, result, config, state_helpers, result_config)
   local o = {
     handler = handler,
     result = result,
     config = config,
+    result_config = result_config,
     listeners = {},
     namespaces = {},
     note_order = {},
@@ -17,6 +19,7 @@ function EditorUI:new(handler, result, config, state_helpers)
     current_note_id = nil,
     window = nil,
     state_helpers = state_helpers or {},
+    explicit_visual_range = nil,
   }
   setmetatable(o, self)
   self.__index = self
@@ -88,14 +91,61 @@ function EditorUI:update_note_file(note, new_file)
   end
 end
 
+function EditorUI:capture_visual_range()
+  local mode = vim.fn.mode()
+  local mode_char = mode and mode:sub(1, 1) or ""
+  if mode_char ~= "v" and mode_char ~= "V" and mode_char ~= "\22" then
+    self.explicit_visual_range = nil
+    return
+  end
+
+  local start_row = vim.fn.getpos("v")[2]
+  local end_row = vim.api.nvim_win_get_cursor(0)[1]
+  if not start_row or not end_row or start_row == 0 or end_row == 0 then
+    self.explicit_visual_range = nil
+    return
+  end
+
+  if start_row > end_row then
+    start_row, end_row = end_row, start_row
+  end
+
+  self.explicit_visual_range = {
+    start_row = start_row,
+    end_row = end_row,
+  }
+end
+
+local function is_visual_mapping(mode)
+  if type(mode) == "table" then
+    for _, value in ipairs(mode) do
+      if is_visual_mapping(value) then
+        return true
+      end
+    end
+    return false
+  end
+
+  return mode == "v" or mode == "x"
+end
+
+function EditorUI:apply_buffer_mappings(bufnr)
+  for _, mapping in ipairs(self.config.mappings or {}) do
+    vim.keymap.set(mapping.mode, mapping.key, function()
+      if is_visual_mapping(mapping.mode) then
+        self:capture_visual_range()
+      end
+      self:do_action(mapping.action)
+    end, vim.tbl_extend("force", { buffer = bufnr, nowait = true, silent = true }, mapping.opts or {}))
+  end
+end
+
 function EditorUI:create_buf(file)
   local bufnr = vim.fn.bufadd(file)
   vim.fn.bufload(bufnr)
   vim.bo[bufnr].filetype = "sql"
   vim.bo[bufnr].bufhidden = "hide"
-  util.apply_buffer_mappings(bufnr, self.config.mappings, function(action)
-    self:do_action(action)
-  end)
+  self:apply_buffer_mappings(bufnr)
 
   return bufnr
 end
@@ -310,9 +360,13 @@ function EditorUI:show(winid)
   vim.api.nvim_win_set_buf(winid, note.bufnr)
 end
 
-local function get_visual_lines(bufnr)
-  local start_row = vim.fn.getpos("'<")[2]
-  local end_row = vim.fn.getpos("'>")[2]
+local function get_visual_lines(editor, bufnr)
+  local explicit = editor and editor.explicit_visual_range or nil
+  local start_row = explicit and explicit.start_row or vim.fn.getpos("'<")[2]
+  local end_row = explicit and explicit.end_row or vim.fn.getpos("'>")[2]
+  if editor then
+    editor.explicit_visual_range = nil
+  end
   if start_row == 0 or end_row == 0 then
     return nil
   end
@@ -332,6 +386,25 @@ function EditorUI:run_query(query)
       self.result:set_call(call)
     end
   end)
+end
+
+function EditorUI:run_queries(queries)
+  local statements = queries or {}
+  if #statements == 0 then
+    return
+  end
+
+  if #statements == 1 then
+    self:run_query(statements[1])
+    return
+  end
+
+  local connection = self.handler:get_current_connection()
+  if not connection then
+    error("no active connection selected")
+  end
+
+  batch_result_tab.open(self.handler, self.result_config, connection.id, statements)
 end
 
 function EditorUI:jump_to_table_under_cursor()
@@ -425,16 +498,20 @@ function EditorUI:do_action(action)
   if action == "run_file" then
     self:run_query(table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"))
   elseif action == "run_selection" then
-    local lines = get_visual_lines(bufnr)
+    local lines = get_visual_lines(self, bufnr)
     if not lines then
       return
     end
-    self:run_query(table.concat(lines, "\n"))
+    local statements = util.split_sql_statements(table.concat(lines, "\n"))
+    if #statements == 0 then
+      return
+    end
+    self:run_queries(statements)
   elseif action == "run_under_cursor" then
     local line = vim.api.nvim_get_current_line()
     self:run_query(line)
   elseif action == "run_in_float" then
-    local lines = get_visual_lines(bufnr)
+    local lines = get_visual_lines(self, bufnr)
     local query = nil
     if lines then
       query = table.concat(lines, "\n")

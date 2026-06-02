@@ -135,7 +135,7 @@ export CONNECTOR_CONNECTIONS='[
 
 ## Editor workflow
 
-- `BB` in visual mode runs the selection
+- `BB` or `<CR>` in visual mode runs the selection; when the selection contains multiple SQL statements, connector opens a dedicated result tab with one split per statement (`q` closes it)
 - `BB` in normal mode runs the whole scratchpad
 - `<CR>` runs the current line under the cursor
 - `<C-Space>` runs the current selection or line in a floating window
@@ -194,10 +194,8 @@ builds it with Cargo and copies the binary into Neovim's data directory.
 - [x] スクラッチのテーブル名から左ナビひらく(gdとかで定義元いくイメージ)
 - [x] 一時ウインドウ(フロート？)でのクエリ実行
 - [x] 補完ソース
-- [ ] スクラッチファイルのfzf-lua検索
+- [x] スクラッチファイルのfzf-lua検索
 - [X] DB tabgle でfzf-lua検索 左ナビ連動
-- [ ] ~リフレッシュボタン~ ボタンは甘え 自動でリフレッシュ！
-- [ ] ~結果からクエリを逆生成~ よく考えると不可能だし便利じゃない気がする
 - [x] 自動DB選択は副作用があるものはconfirmを挟む
 - [x] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)
   - [x] そのための保存領域を確保(sqlite？)
@@ -206,10 +204,12 @@ builds it with Cargo and copies the binary into Neovim's data directory.
       - [x] プロジェクト・ブランチ・テーブル等々 条件指定できると良い
   - [x] resultテーブルから前後のクエリに移動(これはプロジェクト・ブランチを意識する)
   - [x] 合わせて左下の実行クエリも保存された以前のクエリを表示する
-- [ ] クエリをビジュアル選択して複数発火するとスプリットでいい具合に表示してくれる
-  - [ ] タブでだせてカジュアルに閉じれるといいなと
+- [x] クエリをビジュアル選択して複数発火するとスプリットでいい具合に表示してくれる
+  - [x] タブでだせてカジュアルに閉じれるといいなと
 - [X] 左ナビでカラム出したとしてvせんたくでクエリ自動生成
 - [ ] いい感じにトンネルでダンプできる機能をrustで挟んで実現したい
+- [ ] mdでいい感じにリレーション図を表示する
 
 - [ ] ~er図を出せちゃったりする~
-- [ ] mdでいい感じにリレーション図を表示する
+- [ ] ~リフレッシュボタン~ ボタンは甘え 自動でリフレッシュ！
+- [ ] ~結果からクエリを逆生成~ よく考えると不可能だし便利じゃない気がする

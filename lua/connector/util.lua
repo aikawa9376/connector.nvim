@@ -507,6 +507,130 @@ function M.query_has_side_effects(query)
   return false
 end
 
+local function push_sql_statement(statements, chunk)
+  local trimmed = vim.trim(chunk or "")
+  if trimmed ~= "" then
+    table.insert(statements, trimmed)
+  end
+end
+
+local function match_dollar_quote_tag(text, pos)
+  local rest = text:sub(pos)
+  return rest:match("^%$[%a_][%w_]*%$") or rest:match("^%$%$")
+end
+
+function M.split_sql_statements(text)
+  if not text or text == "" then
+    return {}
+  end
+
+  local statements = {}
+  local start_pos = 1
+  local pos = 1
+  local len = #text
+  local state = "normal"
+  local dollar_tag = nil
+
+  while pos <= len do
+    local ch = text:sub(pos, pos)
+    local next_ch = pos < len and text:sub(pos + 1, pos + 1) or ""
+    local prev_ch = pos > 1 and text:sub(pos - 1, pos - 1) or ""
+
+    if state == "line_comment" then
+      if ch == "\n" then
+        state = "normal"
+      end
+      pos = pos + 1
+    elseif state == "block_comment" then
+      if ch == "*" and next_ch == "/" then
+        state = "normal"
+        pos = pos + 2
+      else
+        pos = pos + 1
+      end
+    elseif state == "single_quote" then
+      if ch == "'" then
+        if next_ch == "'" then
+          pos = pos + 2
+        elseif prev_ch == "\\" then
+          pos = pos + 1
+        else
+          state = "normal"
+          pos = pos + 1
+        end
+      else
+        pos = pos + 1
+      end
+    elseif state == "double_quote" then
+      if ch == '"' then
+        if next_ch == '"' then
+          pos = pos + 2
+        else
+          state = "normal"
+          pos = pos + 1
+        end
+      else
+        pos = pos + 1
+      end
+    elseif state == "backtick_quote" then
+      if ch == "`" then
+        if next_ch == "`" then
+          pos = pos + 2
+        else
+          state = "normal"
+          pos = pos + 1
+        end
+      else
+        pos = pos + 1
+      end
+    elseif state == "dollar_quote" then
+      if dollar_tag and text:sub(pos, pos + #dollar_tag - 1) == dollar_tag then
+        state = "normal"
+        pos = pos + #dollar_tag
+        dollar_tag = nil
+      else
+        pos = pos + 1
+      end
+    else
+      if ch == "-" and next_ch == "-" then
+        state = "line_comment"
+        pos = pos + 2
+      elseif ch == "#" then
+        state = "line_comment"
+        pos = pos + 1
+      elseif ch == "/" and next_ch == "*" then
+        state = "block_comment"
+        pos = pos + 2
+      elseif ch == "'" then
+        state = "single_quote"
+        pos = pos + 1
+      elseif ch == '"' then
+        state = "double_quote"
+        pos = pos + 1
+      elseif ch == "`" then
+        state = "backtick_quote"
+        pos = pos + 1
+      else
+        local tag = match_dollar_quote_tag(text, pos)
+        if tag then
+          state = "dollar_quote"
+          dollar_tag = tag
+          pos = pos + #tag
+        elseif ch == ";" then
+          push_sql_statement(statements, text:sub(start_pos, pos - 1))
+          start_pos = pos + 1
+          pos = pos + 1
+        else
+          pos = pos + 1
+        end
+      end
+    end
+  end
+
+  push_sql_statement(statements, text:sub(start_pos))
+  return statements
+end
+
 function M.parse_query_table_references(query)
   if not query or query == "" then
     return {}

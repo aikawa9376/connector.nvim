@@ -85,7 +85,7 @@ local function setup_ui()
         m.current_sql_bufnr = bufnr
       end
     end,
-  })
+  }, m.config.result)
   m.drawer = DrawerUI:new(m.handler, m.editor, m.result, m.config.drawer, {
     get_current_project = function() return m.current_project end
   })

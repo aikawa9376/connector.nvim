@@ -63,6 +63,7 @@ function config.default()
       mappings = {
         { key = "BB", mode = "v", action = "run_selection" },
         { key = "BB", mode = "n", action = "run_file" },
+        { key = "<CR>", mode = "v", action = "run_selection" },
         { key = "<CR>", mode = "n", action = "run_under_cursor" },
         { key = "<C-Space>", mode = "n", action = "run_in_float" },
         { key = "<C-Space>", mode = "v", action = "run_in_float" },
