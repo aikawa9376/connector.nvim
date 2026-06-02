@@ -143,6 +143,7 @@ export CONNECTOR_CONNECTIONS='[
 
 ## Result workflow
 
+- `?` open the result menu (instant query change / show query in scratchpad)
 - `L` / `H` next / previous page
 - `E` / `F` go to last / first page
 - `]r` / `[r` newer / older result in the current session

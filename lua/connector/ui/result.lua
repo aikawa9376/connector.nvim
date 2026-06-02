@@ -26,7 +26,13 @@ function ResultUI:new(handler, config)
     page = 1,
     line_map = {},
     cell_map = {},
+
+    -- Set by api.state after EditorUI is created.
+    editor_ui = nil,
+
+    -- Inline cell editor state (floating single-line editor).
     editor = nil,
+
     disposed = false,
     dispose_call_state_listener = nil,
   }
@@ -57,6 +63,219 @@ end
 
 function ResultUI:get_call()
   return self.current_call_id and self.handler:get_call(self.current_call_id) or nil
+end
+
+function ResultUI:set_editor_ui(editor_ui)
+  self.editor_ui = editor_ui
+end
+
+function ResultUI:append_query_to_scratchpad(query)
+  if not query or vim.trim(query) == "" then
+    util.notify("No query to insert.", vim.log.levels.WARN)
+    return
+  end
+  if not self.editor_ui then
+    util.notify("Editor is not available.", vim.log.levels.WARN)
+    return
+  end
+
+  local note = self.editor_ui:get_current_note()
+  if not note then
+    pcall(self.editor_ui.namespace_create_note, self.editor_ui, "global", "scratchpad")
+    note = self.editor_ui:get_current_note()
+  end
+  if not note or not note.bufnr or not vim.api.nvim_buf_is_valid(note.bufnr) then
+    util.notify("Failed to open scratchpad.", vim.log.levels.ERROR)
+    return
+  end
+
+  local bufnr = note.bufnr
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, { "", query })
+
+  if self.editor_ui.window and vim.api.nvim_win_is_valid(self.editor_ui.window) then
+    vim.api.nvim_set_current_win(self.editor_ui.window)
+    local new_line = vim.api.nvim_buf_line_count(bufnr)
+    pcall(vim.api.nvim_win_set_cursor, self.editor_ui.window, { new_line, 0 })
+  end
+end
+
+function ResultUI:open_query_editor(initial_query, opts)
+  opts = vim.tbl_extend("force", {
+    title = "Instant Query",
+    on_submit = nil,
+  }, opts or {})
+
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].swapfile = false
+  vim.bo[bufnr].filetype = "sql"
+
+  local lines
+  if initial_query and initial_query ~= "" then
+    lines = vim.split(initial_query, "\n", { plain = true })
+  else
+    lines = { "" }
+  end
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+
+  local winid = window.open_centered(bufnr, true, {
+    border = "rounded",
+    title = opts.title,
+    title_pos = "center",
+    zindex = 200,
+    width_ratio = 0.9,
+    height_ratio = 0.6,
+    min_height = 8,
+  })
+
+  vim.wo[winid].wrap = false
+  vim.wo[winid].number = false
+  vim.wo[winid].relativenumber = false
+  vim.wo[winid].cursorline = true
+
+  local function close()
+    if vim.api.nvim_win_is_valid(winid) then
+      pcall(vim.api.nvim_win_close, winid, true)
+    end
+  end
+
+  local function submit()
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"))
+    if text == "" then
+      util.notify("Query is empty.", vim.log.levels.WARN)
+      return
+    end
+    if opts.on_submit then
+      opts.on_submit(text)
+    end
+    close()
+  end
+
+  vim.keymap.set("n", "q", close, { buffer = bufnr, silent = true })
+  vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, silent = true })
+  vim.keymap.set("n", "<CR>", submit, { buffer = bufnr, silent = true })
+  vim.keymap.set("i", "<C-CR>", function()
+    vim.cmd("stopinsert")
+    submit()
+  end, { buffer = bufnr, silent = true })
+
+  -- place cursor at end
+  local last_line = math.max(1, vim.api.nvim_buf_line_count(bufnr))
+  local last_text = vim.api.nvim_buf_get_lines(bufnr, last_line - 1, last_line, false)[1] or ""
+  pcall(vim.api.nvim_win_set_cursor, winid, { last_line, #last_text })
+  vim.cmd.startinsert()
+
+  util.notify("Instant Query: <Esc><CR> to run, q to close.")
+end
+
+function ResultUI:capture_visual_range()
+  local mode = vim.fn.mode()
+  local mode_char = mode and mode:sub(1, 1) or ""
+  if mode_char ~= "v" and mode_char ~= "V" and mode_char ~= "\22" then
+    self._explicit_visual_range = nil
+    return false
+  end
+
+  local start_row = vim.fn.getpos("v")[2]
+  local end_row = vim.api.nvim_win_get_cursor(0)[1]
+  if not start_row or not end_row or start_row == 0 or end_row == 0 then
+    self._explicit_visual_range = nil
+    return false
+  end
+
+  if start_row > end_row then
+    start_row, end_row = end_row, start_row
+  end
+
+  self._explicit_visual_range = { start_row = start_row, end_row = end_row }
+  return true
+end
+
+function ResultUI:open_menu()
+  local call = self:get_call()
+  if not call then
+    util.notify("No result selected.", vim.log.levels.INFO)
+    return
+  end
+
+  local has_visual = self:capture_visual_range()
+
+  local items = {
+    { label = "Instant query change (float)", action = "instant_query_change" },
+    { label = "Show current query in scratchpad", action = "scratchpad_show" },
+    { label = "---", action = nil },
+    { label = "Page next (L)", action = "page_next" },
+    { label = "Page prev (H)", action = "page_prev" },
+    { label = "Page last (E)", action = "page_last" },
+    { label = "Page first (F)", action = "page_first" },
+    { label = "---", action = nil },
+    { label = "Newer result (]r)", action = "result_newer" },
+    { label = "Older result ([r)", action = "result_older" },
+    { label = "Newer query history (]q)", action = "history_newer" },
+    { label = "Older query history ([q)", action = "history_older" },
+    { label = "---", action = nil },
+    { label = "Edit cell (<CR>/i)", action = "edit_cell" },
+    { label = "---", action = nil },
+    { label = "Yank current row as JSON (yaj)", action = "yank_current_json" },
+    { label = "Yank all rows as JSON (yaJ)", action = "yank_all_json" },
+    { label = "Yank current row as CSV (yac)", action = "yank_current_csv" },
+    { label = "Yank all rows as CSV (yaC)", action = "yank_all_csv" },
+  }
+
+  if has_visual then
+    table.insert(items, { label = "Yank selection as JSON (yaj)", action = "yank_selection_json" })
+    table.insert(items, { label = "Yank selection as CSV (yac)", action = "yank_selection_csv" })
+  end
+
+  if call.state == "executing" then
+    table.insert(items, { label = "---", action = nil })
+    table.insert(items, { label = "Cancel running query (<C-c>)", action = "cancel" })
+  end
+
+  vim.ui.select(vim.tbl_map(function(i) return i.label end, items), { prompt = "Result menu" }, function(_choice, idx)
+    local item = idx and items[idx] or nil
+    if not item then
+      return
+    end
+    if not item.action then
+      return
+    end
+
+    if item.action == "instant_query_change" then
+      self:open_query_editor(call.query or "", {
+        title = "Instant Query Change",
+        on_submit = function(text)
+          local latest = self.handler:get_call(call.id)
+          local base = latest or call
+          if base and base.state == "executing" then
+            pcall(self.handler.call_cancel, self.handler, base.id)
+          end
+
+          local conn_id = (base and base.connection_id) or call.connection_id
+          self.handler:connection_execute(conn_id, text, function(new_call)
+            if new_call then
+              self:set_call(new_call)
+            end
+          end)
+        end,
+      })
+    elseif item.action == "scratchpad_show" then
+      local latest = self.handler:get_call(call.id)
+      self:append_query_to_scratchpad((latest and latest.query) or call.query or "")
+    elseif item.action == "cancel" then
+      local latest = self.handler:get_call(call.id)
+      if latest and latest.state == "executing" then
+        pcall(self.handler.call_cancel, self.handler, latest.id)
+      end
+    else
+      -- Reuse existing key-bound actions.
+      self:do_action(item.action)
+    end
+  end)
 end
 
 function ResultUI:show(winid)
@@ -205,6 +424,21 @@ function ResultUI:selected_range()
   local call = self:get_call()
   if not call or not call.result then
     return nil
+  end
+
+  local explicit = self._explicit_visual_range
+  if explicit and explicit.start_row and explicit.end_row then
+    local line1, line2 = explicit.start_row, explicit.end_row
+    self._explicit_visual_range = nil
+    local start_idx, end_idx
+    for line = line1, line2 do
+      local row_index = self.line_map[line]
+      if row_index then
+        start_idx = start_idx or row_index
+        end_idx = row_index + 1
+      end
+    end
+    return start_idx, end_idx
   end
 
   local mode = vim.fn.mode()
@@ -377,7 +611,9 @@ function ResultUI:yank(kind, all_rows)
 end
 
 function ResultUI:do_action(action)
-  if action == "page_next" then
+  if action == "menu" then
+    self:open_menu()
+  elseif action == "page_next" then
     self:page_next()
   elseif action == "page_prev" then
     self:page_prev()
@@ -405,7 +641,7 @@ function ResultUI:do_action(action)
     self:edit_cell()
   elseif action == "cancel_call" then
     local call = self:get_call()
-    if call then
+    if call and call.state == "executing" then
       self.handler:call_cancel(call.id)
     end
   end

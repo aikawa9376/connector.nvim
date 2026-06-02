@@ -39,6 +39,9 @@ function config.default()
       page_size = 100,
       focus_result = false,
       mappings = {
+        { key = "?", mode = "n", action = "menu" },
+        { key = "?", mode = "v", action = "menu" },
+        { key = "?", mode = "x", action = "menu" },
         { key = "L", mode = "n", action = "page_next" },
         { key = "H", mode = "n", action = "page_prev" },
         { key = "E", mode = "n", action = "page_last" },

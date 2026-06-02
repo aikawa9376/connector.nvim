@@ -86,6 +86,7 @@ local function setup_ui()
       end
     end,
   }, m.config.result)
+  m.result:set_editor_ui(m.editor)
   m.drawer = DrawerUI:new(m.handler, m.editor, m.result, m.config.drawer, {
     get_current_project = function() return m.current_project end
   })
