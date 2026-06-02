@@ -44,6 +44,13 @@ local commands = {
       end
     end)
   end,
+  scratchpads = function()
+    require("connector").pick_scratchpad()
+  end,
+  scratchgrep = function(args)
+    local search = table.concat(args or {}, " ")
+    require("connector").grep_scratchpads({ search = search ~= "" and search or nil })
+  end,
   reload = function()
     local api = require("connector").api.core
     for _, source in ipairs(api.get_sources()) do

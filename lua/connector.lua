@@ -117,6 +117,28 @@ function connector.install(opts)
   return backend.install(api.current_config() or config.default(), opts)
 end
 
+function connector.scratchpads(opts)
+  return connector.api.ui.editor_scratchpads(opts or {})
+end
+
+function connector.scratchpads_fzf_source(opts)
+  local entries = connector.scratchpads(opts or {})
+  return vim.tbl_map(function(entry)
+    return entry.display
+  end, entries)
+end
+
+function connector.pick_scratchpad(opts)
+  return connector.api.ui.editor_pick_scratchpad(opts or {})
+end
+
+function connector.grep_scratchpads(opts)
+  if type(opts) == "string" then
+    opts = { search = opts }
+  end
+  return connector.api.ui.editor_grep_scratchpads(opts or {})
+end
+
 function connector.blink_source(opts)
   opts = opts or {}
   local uses_provider_overrides = opts.source ~= nil or opts.provider ~= nil or has_top_level_blink_provider_overrides(opts)

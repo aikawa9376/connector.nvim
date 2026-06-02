@@ -40,9 +40,17 @@ require("connector").close()
 require("connector").toggle()
 require("connector").execute("select 1")
 require("connector").store("csv", "file", { extra_arg = "/tmp/result.csv" })
+require("connector").scratchpads_fzf_source()
+require("connector").pick_scratchpad() -- requires fzf-lua for the picker UI
+require("connector").grep_scratchpads() -- requires fzf-lua
 ```
 
 The same entrypoints are exposed through `:Connector`.
+
+Additional commands:
+
+- `:Connector scratchpads` pick a scratchpad (fzf-lua)
+- `:Connector scratchgrep [query...]` grep scratchpads (fzf-lua)
 
 ## Default configuration
 
@@ -176,6 +184,10 @@ Additional features
 Query history is stored in Neovim state. `require("connector").history(opts)` returns entries for custom
 pickers, and `require("connector").history_fzf_source(opts)` returns one-line labels suitable for fzf-lua.
 
+Scratchpads expose similar helpers: `require("connector").scratchpads(opts)` returns entries, and
+`require("connector").scratchpads_fzf_source(opts)` returns one-line labels. `:Connector scratchpads`
+uses an `fzf-lua` picker with SQL preview when available, and `<C-g>` jumps into scratchpad grep.
+
 Editable results currently target **single-table `select * from ...` queries with a primary key**. Primary-key
 columns stay read-only, and you can type `NULL` to clear nullable cells.
 
@@ -185,32 +197,6 @@ The backend lives in this repository and builds to `connector-backend`. `require
 builds it with Cargo and copies the binary into Neovim's data directory.
 
 ## TODO
-- [x] スクラッチのプロジェクト対応
-- [x] 開いた場所からプロジェクトをなんとなく解決する
-  - [x] プロジェクト名を左ナビにいい感じに表示する
-  - [x] 切り替えれるようにするとなおよい (開いているsqlベースで切り替えたい)
-  - [x] connection名のところでiするとconnectionがプロジェクトに紐づいた除外される
-    - [x] 除外されたconnectionはignoreみたいな名前でグルーピングされる(操作自体は可能) グレーアウトされている
-    - [x] ignoreグループからiでもとにもどせる
-- [x] スクラッチのテーブル名から左ナビひらく(gdとかで定義元いくイメージ)
-- [x] 一時ウインドウ(フロート？)でのクエリ実行
-- [x] 補完ソース
-- [x] スクラッチファイルのfzf-lua検索
-- [X] DB tabgle でfzf-lua検索 左ナビ連動
-- [x] 自動DB選択は副作用があるものはconfirmを挟む
-- [x] テーブルから過去に使用したクエリ一覧かだせる(これはプロジェクトごとではない)
-  - [x] そのための保存領域を確保(sqlite？)
-    - [x] ここまでやるならクエリ履歴のfzf-lua検索も欲しいよね(ソースとしてfzf-luaで使いやすいリストを出す関数を用意すればいいかな)
-    - [x] 複数行のクエリは一行として保存されるが改行はデータとしてもって復元可能にしたい
-      - [x] プロジェクト・ブランチ・テーブル等々 条件指定できると良い
-  - [x] resultテーブルから前後のクエリに移動(これはプロジェクト・ブランチを意識する)
-  - [x] 合わせて左下の実行クエリも保存された以前のクエリを表示する
-- [x] クエリをビジュアル選択して複数発火するとスプリットでいい具合に表示してくれる
-  - [x] タブでだせてカジュアルに閉じれるといいなと
-- [X] 左ナビでカラム出したとしてvせんたくでクエリ自動生成
+- [ ] 対応DBの種類を増やす
 - [ ] いい感じにトンネルでダンプできる機能をrustで挟んで実現したい
 - [ ] mdでいい感じにリレーション図を表示する
-
-- [ ] ~er図を出せちゃったりする~
-- [ ] ~リフレッシュボタン~ ボタンは甘え 自動でリフレッシュ！
-- [ ] ~結果からクエリを逆生成~ よく考えると不可能だし便利じゃない気がする
