@@ -113,8 +113,8 @@ function connector.history_fzf_source(opts)
   end, entries)
 end
 
-function connector.install()
-  return backend.install(api.current_config() or config.default())
+function connector.install(opts)
+  return backend.install(api.current_config() or config.default(), opts)
 end
 
 function connector.blink_source(opts)

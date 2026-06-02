@@ -181,7 +181,7 @@ columns stay read-only, and you can type `NULL` to clear nullable cells.
 
 ## Backend
 
-The backend lives in this repository and builds to `connector-backend`. `require("connector").install( )`
+The backend lives in this repository and builds to `connector-backend`. `require("connector").install()`
 builds it with Cargo and copies the binary into Neovim's data directory.
 
 ## TODO
