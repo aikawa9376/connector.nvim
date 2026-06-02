@@ -152,6 +152,21 @@ export CONNECTOR_CONNECTIONS='[
 - `yaJ` / `yaC` yank all rows as JSON / CSV
 - `<C-c>` cancel the active call
 
+### Result table highlights
+
+The result buffer uses a few dedicated highlight groups (linked to your colorscheme by default):
+
+- `ConnectorResultTableBorder` (grid separators like `│`, `─`, `┼`)
+- `ConnectorResultTableHeader` (column names)
+- `ConnectorResultTableIndex` (row numbers)
+- `ConnectorResultTableNull` (`NULL` cells)
+
+Override them with `vim.api.nvim_set_hl(0, ...)` if you want a different look.
+
+## Layout behavior
+
+The default layout now keeps the drawer width and the result / call-log heights stable across temporary split changes (for example when another plugin opens and closes a window in the same tab), restores the configured connector layout sizes when you focus the connector tab again, and starts the call-log panel at the same default height as the result panel.
+
 Additional features
 
 - Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/INSERT templates; generated queries are appended to the current scratchpad (not executed).
