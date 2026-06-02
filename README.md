@@ -43,6 +43,7 @@ require("connector").store("csv", "file", { extra_arg = "/tmp/result.csv" })
 require("connector").scratchpads_fzf_source()
 require("connector").pick_scratchpad() -- requires fzf-lua for the picker UI
 require("connector").grep_scratchpads() -- requires fzf-lua
+require("connector").pick_table() -- uses fzf-lua w/ table-definition preview when available
 ```
 
 The same entrypoints are exposed through `:Connector`.
@@ -51,6 +52,7 @@ Additional commands:
 
 - `:Connector scratchpads` pick a scratchpad (fzf-lua)
 - `:Connector scratchgrep [query...]` grep scratchpads (fzf-lua)
+- `:Connector tables` pick a table (fzf-lua preview when available)
 
 ## Default configuration
 
@@ -179,7 +181,7 @@ The default layout now keeps the drawer width and the result / call-log heights 
 Additional features
 
 - Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/INSERT templates; generated queries are appended to the current scratchpad (not executed).
-- Table picker: `require("connector").api.ui.drawer_pick_table()` prompts for a table (Connection · schema.table) and focuses it in the left drawer.
+- Table picker: `require("connector").pick_table()` / `require("connector").api.ui.drawer_pick_table()` prompts for a table (DB.table) and focuses it in the left drawer. When `fzf-lua` is available, the picker shows a preview with an approximate table definition (columns / PK).
 
 Query history is stored in Neovim state. `require("connector").history(opts)` returns entries for custom
 pickers, and `require("connector").history_fzf_source(opts)` returns one-line labels suitable for fzf-lua.

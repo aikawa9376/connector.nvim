@@ -51,6 +51,9 @@ local commands = {
     local search = table.concat(args or {}, " ")
     require("connector").grep_scratchpads({ search = search ~= "" and search or nil })
   end,
+  tables = function()
+    require("connector").pick_table()
+  end,
   reload = function()
     local api = require("connector").api.core
     for _, source in ipairs(api.get_sources()) do

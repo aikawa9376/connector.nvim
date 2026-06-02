@@ -132,6 +132,10 @@ function connector.pick_scratchpad(opts)
   return connector.api.ui.editor_pick_scratchpad(opts or {})
 end
 
+function connector.pick_table(opts)
+  return connector.api.ui.drawer_pick_table(opts or {})
+end
+
 function connector.grep_scratchpads(opts)
   if type(opts) == "string" then
     opts = { search = opts }
