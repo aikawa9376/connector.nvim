@@ -1,5 +1,6 @@
 local buffer_line = require("connector.ui.buffer_line")
 local candies_module = require("connector.ui.candies")
+local ddl = require("connector.ddl")
 local float = require("connector.ui.float")
 local util = require("connector.util")
 local function dbg() end
@@ -36,7 +37,7 @@ local function err_to_string(err)
 end
 
 local DrawerUI = {}
-local GENERATE_ACTIONS = { "Select", "Update", "Delete", "Insert" }
+local GENERATE_ACTIONS = { "Select", "Update", "Delete", "Insert", "DDL" }
 
 function DrawerUI:new(handler, editor, result, config, state_helpers)
   local bufnr = vim.api.nvim_create_buf(false, true)
@@ -571,7 +572,7 @@ function DrawerUI:open_query_action_menu(node, opts)
     end
 
     local action = choice:lower()
-    if action == "select" or action == "update" or action == "delete" or action == "insert" then
+    if action == "select" or action == "update" or action == "delete" or action == "insert" or action == "ddl" then
       self:generate_query_for_table(node, action, visual_cols)
     end
   end)
@@ -757,7 +758,7 @@ function DrawerUI:get_all_columns_for_table(node)
 end
 
 function DrawerUI:generate_query_for_table(node, action, explicit_cols)
-  -- action is one of: "select", "update", "delete", "insert"
+  -- action is one of: "select", "update", "delete", "insert", "ddl"
   local sel_cols = explicit_cols or self:get_selected_columns_from_visual(node)
   dbg(("generate_query_for_table called: action=%s table=%s schema=%s explicit=%s sel_cols=%s"):format(tostring(action), tostring(node and node.table), tostring(node and node.schema), vim.inspect(explicit_cols), vim.inspect(sel_cols)))
   local all_cols, cols_meta = self:get_all_columns_for_table(node)
@@ -845,6 +846,13 @@ function DrawerUI:generate_query_for_table(node, action, explicit_cols)
       for _, c in ipairs(ins_cols) do table.insert(quoted, quote(c)); table.insert(placeholders, "?") end
       text = ("INSERT INTO %s (%s) VALUES (%s);"):format(qual_table, table.concat(quoted, ", "), table.concat(placeholders, ", "))
     end
+  elseif action == "ddl" then
+    text = ddl.render_table_definition(conn, {
+      connection_id = node.connection_id,
+      schema = node.schema,
+      table = node.table,
+      materialization = node.materialization,
+    }, cols_meta)
   end
 
   if text and text ~= "" then

@@ -134,7 +134,7 @@ export CONNECTOR_CONNECTIONS='[
 
 ## Drawer workflow
 
-- `<CR>` select/open the node under cursor. On a table or column this opens a menu to generate SQL templates (Select/Update/Delete/Insert). Visual selection of columns is supported — use `v`/`V` to pick multiple columns before `<CR>`.
+- `<CR>` select/open the node under cursor. On a table or column this opens a menu to generate SQL templates (Select/Update/Delete/Insert/DDL). Visual selection of columns is supported — use `v`/`V` to pick multiple columns before `<CR>`.
 - `o` toggle (expand/collapse) the node under cursor
 - `cw` edit connection details or rename a scratchpad
 - `dd` delete connection or scratchpad (use with care)
@@ -180,7 +180,7 @@ The default layout now keeps the drawer width and the result / call-log heights 
 
 Additional features
 
-- Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/INSERT templates; generated queries are appended to the current scratchpad (not executed).
+- Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/INSERT templates or an approximate DDL definition; generated text is appended to the current scratchpad (not executed).
 - Table picker: `require("connector").pick_table()` / `require("connector").api.ui.drawer_pick_table()` prompts for a table (DB.table) and focuses it in the left drawer. When `fzf-lua` is available, the picker shows a preview with an approximate table definition (columns / PK).
 
 Query history is stored in Neovim state. `require("connector").history(opts)` returns entries for custom
