@@ -4,6 +4,37 @@ local float = require("connector.ui.float")
 local util = require("connector.util")
 local function dbg() end
 
+local function err_to_string(err)
+  if err == nil then
+    return ""
+  end
+
+  local s
+  if type(err) == "table" and err.message then
+    s = tostring(err.message)
+  else
+    s = tostring(err)
+  end
+
+  s = s:gsub("\r", "")
+
+  local head = s:match("^(.-)\nstack traceback:")
+  if head then
+    s = head
+  end
+
+  local first = (vim.split(s, "\n", { plain = true }) or {})[1]
+  s = vim.trim(first or s)
+
+  -- Lua errors are often: /path/to/file.lua:123: message
+  local msg = s:match(":%d+:%s*(.*)$")
+  if msg and msg ~= "" then
+    s = msg
+  end
+
+  return s
+end
+
 local DrawerUI = {}
 local GENERATE_ACTIONS = { "Select", "Update", "Delete", "Insert" }
 
@@ -214,6 +245,8 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts
   elseif kind == "ignored_connection_group" then
     return candies_module.get(self.candies, "connection", "none_dir")
   elseif kind == "ignored_connection_marker" then
+    return candies_module.get(self.candies, "remove", "none")
+  elseif kind == "connection_error" then
     return candies_module.get(self.candies, "remove", "none")
   elseif kind == "schema" or kind == "dbroot" then
     return candies_module.get(self.candies, "schema")
@@ -469,10 +502,13 @@ function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ig
   }, { expandable = true, active = database == current_db, ignored = ignored == true })
   if self:is_expanded(db_key) then
     local ok_structure, items = pcall(self.handler.connection_get_structure, self.handler, conn.id, database)
-    if ok_structure then
+    if ok_structure and type(items) == "table" then
       self:render_structure_items(lines, depth + 1, conn, items)
     else
-      util.notify(("Failed to load tables for %s: %s"):format(database, items), vim.log.levels.ERROR)
+      self:add_line(lines, depth + 1, "connection error: " .. err_to_string(items), {
+        kind = "connection_error",
+        connection_id = conn.id,
+      }, { ignored = ignored == true })
     end
   end
 end
@@ -953,8 +989,13 @@ function DrawerUI:refresh()
                   end
                 else
                   local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
-                  if ok_structure then
+                  if ok_structure and type(structure) == "table" then
                     self:render_structure_items(lines, 3, conn, structure)
+                  else
+                    self:add_line(lines, 3, "connection error: " .. err_to_string(structure), {
+                      kind = "connection_error",
+                      connection_id = conn.id,
+                    })
                   end
                 end
               end
@@ -996,23 +1037,38 @@ function DrawerUI:refresh()
             -- If connection-level ignore is set, show its databases under the ignore group
             if entry.connection_ignored then
               -- Try database listing first
-              local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, entry.conn.id)
+              local ok_db, current_db_or_err, databases = pcall(self.handler.connection_list_databases, self.handler, entry.conn.id)
               if ok_db and databases and #databases > 0 then
                 for _, database in ipairs(databases) do
-                  self:add_database_line(lines, 3, entry.conn, database, current_db, true)
+                  self:add_database_line(lines, 3, entry.conn, database, current_db_or_err, true)
                 end
               else
                 -- If no databases returned, try rendering structure (tables) like the main connection view
-                local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, entry.conn.id)
-                if ok_structure and structure and #structure > 0 then
-                  self:render_structure_items(lines, 3, entry.conn, structure)
+                local ok_structure, structure_or_err = pcall(self.handler.connection_get_structure, self.handler, entry.conn.id)
+                if ok_structure and type(structure_or_err) == "table" and #structure_or_err > 0 then
+                  self:render_structure_items(lines, 3, entry.conn, structure_or_err)
                 else
-                  -- Fallback marker only when nothing else can be displayed
-                  self:add_line(lines, 3, "(entire connection ignored)", {
-                    kind = "ignored_connection_marker",
-                    key = "ignored_marker:" .. conn_id,
-                    connection_id = conn.id,
-                  }, { ignored = true })
+                  local err = nil
+                  if not ok_db then
+                    err = current_db_or_err
+                  end
+                  if not ok_structure then
+                    err = structure_or_err
+                  end
+
+                  if err then
+                    self:add_line(lines, 3, "connection error: " .. err_to_string(err), {
+                      kind = "connection_error",
+                      connection_id = entry.conn.id,
+                    }, { ignored = true })
+                  else
+                    -- Nothing to show (by design) for an ignored connection when it has no DB list / structure
+                    self:add_line(lines, 3, "(entire connection ignored)", {
+                      kind = "ignored_connection_marker",
+                      key = "ignored_marker:" .. conn_id,
+                      connection_id = entry.conn.id,
+                    }, { ignored = true })
+                  end
                 end
               end
             else
