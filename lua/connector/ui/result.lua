@@ -90,8 +90,7 @@ function ResultUI:append_query_to_scratchpad(query)
   end
 
   local bufnr = note.bufnr
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
-  vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, { "", query })
+  util.buf_append_text(bufnr, query, { leading_blank_line = true })
 
   if self.editor_ui.window and vim.api.nvim_win_is_valid(self.editor_ui.window) then
     vim.api.nvim_set_current_win(self.editor_ui.window)

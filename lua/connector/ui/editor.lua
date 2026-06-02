@@ -3,6 +3,42 @@ local window = require("connector.ui.window")
 local batch_result_tab = require("connector.ui.batch_result_tab")
 
 local EditorUI = {}
+local WINBAR_ICONS = {
+  project = "󰉋",
+  database = "",
+}
+
+local function truncate_text(text, max_len)
+  text = vim.trim((text or ""):gsub("%s+", " "))
+  if text == "" or #text <= max_len then
+    return text
+  end
+  return text:sub(1, max_len - 3) .. "..."
+end
+
+local function escape_winbar(text)
+  return tostring(text or ""):gsub("%%", "%%%%")
+end
+
+local function connection_database_label(connection)
+  if not connection then
+    return nil
+  end
+
+  local kind = (connection.type or ""):lower()
+  if kind == "sqlite" or kind == "sqlite3" then
+    if connection.name and connection.name ~= "" then
+      return connection.name
+    end
+    if connection.url and connection.url ~= "" then
+      return vim.fs.basename(connection.url)
+    end
+  end
+  if connection.database and connection.database ~= "" then
+    return connection.database
+  end
+  return connection.name or connection.id
+end
 
 function EditorUI:new(handler, result, config, state_helpers, result_config)
   local o = {
@@ -20,11 +56,28 @@ function EditorUI:new(handler, result, config, state_helpers, result_config)
     window = nil,
     state_helpers = state_helpers or {},
     explicit_visual_range = nil,
+    current_query_context = nil,
   }
   setmetatable(o, self)
   self.__index = self
   util.ensure_dir(config.directory)
   o:load_notes()
+  o:register_event_listener("notes_changed", function()
+    o:update_winbar()
+  end)
+  handler:register_event_listener("current_connection_changed", function(connection)
+    if o.current_query_context and connection and o.current_query_context.connection_id ~= connection.id then
+      o.current_query_context = nil
+    end
+    o:update_winbar()
+  end)
+  handler:register_event_listener("connections_changed", function()
+    o:update_winbar()
+  end)
+  handler:register_event_listener("query_context_changed", function(payload)
+    o.current_query_context = payload
+    o:update_winbar()
+  end)
   return o
 end
 
@@ -140,12 +193,27 @@ function EditorUI:apply_buffer_mappings(bufnr)
   end
 end
 
+function EditorUI:setup_note_autocmds(bufnr)
+  local group = vim.api.nvim_create_augroup("connector-editor-winbar-" .. bufnr, { clear = true })
+  vim.api.nvim_create_autocmd({ "BufEnter", "TextChanged", "TextChangedI" }, {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      local note = self:search_note_with_buf(bufnr)
+      if note and note.id == self.current_note_id then
+        self:update_winbar()
+      end
+    end,
+  })
+end
+
 function EditorUI:create_buf(file)
   local bufnr = vim.fn.bufadd(file)
   vim.fn.bufload(bufnr)
   vim.bo[bufnr].filetype = "sql"
   vim.bo[bufnr].bufhidden = "hide"
   self:apply_buffer_mappings(bufnr)
+  self:setup_note_autocmds(bufnr)
 
   return bufnr
 end
@@ -272,6 +340,9 @@ function EditorUI:note_rename(id, name)
   note.name = name
   self:update_note_file(note, new_file)
   self:emit("notes_changed", note)
+  if self.current_note_id == id then
+    self:update_winbar()
+  end
 end
 
 function EditorUI:current_project()
@@ -310,6 +381,78 @@ function EditorUI:get_current_note()
   return self:search_note(self.current_note_id)
 end
 
+function EditorUI:current_note_query_count(note)
+  note = note or self:get_current_note()
+  if not note or not note.bufnr or not vim.api.nvim_buf_is_valid(note.bufnr) then
+    return 0
+  end
+  local text = table.concat(vim.api.nvim_buf_get_lines(note.bufnr, 0, -1, false), "\n")
+  return #util.split_sql_statements(text)
+end
+
+function EditorUI:current_target_parts()
+  local conn = self.handler:get_current_connection()
+  if not conn then
+    return "no-db", nil
+  end
+
+  local db = connection_database_label(conn)
+  local ctx = self.current_query_context
+  if not ctx or ctx.connection_id ~= conn.id or not ctx.table or ctx.table == "" then
+    return db or conn.name or conn.id or "no-db", nil
+  end
+
+  local kind = (conn.type or ""):lower()
+  local schema = ctx.schema
+  if (kind == "mysql" or kind == "mariadb") and db and schema == db then
+    schema = nil
+  elseif kind == "sqlite" and (schema == "main" or schema == "temp") then
+    schema = nil
+  end
+
+  local table_name = schema and schema ~= "" and (schema .. "." .. ctx.table) or ctx.table
+  return db or conn.name or conn.id or "no-db", table_name
+end
+
+function EditorUI:update_winbar()
+  if not self.window or not vim.api.nvim_win_is_valid(self.window) then
+    return
+  end
+
+  local note = self:get_current_note()
+  if not note then
+    pcall(vim.api.nvim_win_set_option, self.window, "winbar", "Scratchpad")
+    return
+  end
+
+  local project = util.resolve_project(note.file) or self:current_project() or {}
+  local project_name = project.name or "global"
+  local branch = project.branch
+  local file_name = note.name or vim.fs.basename(note.file):gsub("%.sql$", "")
+
+  local left_parts = {
+    WINBAR_ICONS.project .. " " .. project_name,
+  }
+  if branch and branch ~= "" then
+    table.insert(left_parts, branch)
+  end
+  table.insert(left_parts, file_name)
+
+  local database_name, table_name = self:current_target_parts()
+  if database_name and database_name ~= "" then
+    table.insert(left_parts, WINBAR_ICONS.database .. " " .. database_name)
+  end
+  if table_name and table_name ~= "" then
+    table.insert(left_parts, table_name)
+  end
+  local summary = table.concat(left_parts, "  ")
+
+  local query_count = self:current_note_query_count(note)
+  local right = ("%d %s"):format(query_count, query_count == 1 and "query" or "queries")
+  local winbar = ("%s%%=%s"):format(escape_winbar(truncate_text(summary, 120)), escape_winbar(right))
+  pcall(vim.api.nvim_win_set_option, self.window, "winbar", winbar)
+end
+
 function EditorUI:set_current_note(id)
   local note = assert(self:search_note(id), "note not found: " .. id)
   self.current_note_id = id
@@ -320,6 +463,7 @@ function EditorUI:set_current_note(id)
     vim.api.nvim_win_set_buf(self.window, note.bufnr)
   end
   self:emit("current_note_changed", note)
+  self:update_winbar()
 end
 
 function EditorUI:ensure_default_note()
@@ -358,6 +502,7 @@ function EditorUI:show(winid)
   self:ensure_default_note()
   local note = assert(self:search_note(self.current_note_id))
   vim.api.nvim_win_set_buf(winid, note.bufnr)
+  self:update_winbar()
 end
 
 local function get_visual_lines(editor, bufnr)

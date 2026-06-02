@@ -205,16 +205,114 @@ function ui.result_do_action(action)
 end
 
 local function table_picker_winopts()
+  return scratchpad_picker_winopts()
+end
+
+local function parse_table_picker_entry(item)
+  if not item or item == "" then
+    return nil
+  end
+
+  local parts = vim.split(item, "\t", { plain = true })
+  local conn_id = parts[3]
+  local schema = parts[4] ~= "" and parts[4] or nil
+  local tbl = parts[5]
+  local materialization = parts[6] ~= "" and parts[6] or nil
+
+  if not conn_id or conn_id == "" or not tbl or tbl == "" then
+    return nil
+  end
+
   return {
-    split = false,
-    border = "single",
-    height = 0.65,
-    width = 0.9,
-    row = 0.5,
-    preview = {
-      border = "single",
-      hidden = false,
-    },
+    connection_id = conn_id,
+    schema = schema,
+    table = tbl,
+    materialization = materialization,
+  }
+end
+
+local function build_table_preview(handler, preview_cache, item)
+  local entry = parse_table_picker_entry(item)
+  if not entry then
+    return item or ""
+  end
+
+  local cache_key = table.concat({
+    entry.connection_id,
+    entry.schema or "",
+    entry.table,
+    entry.materialization or "",
+  }, "\0")
+  if preview_cache[cache_key] then
+    return preview_cache[cache_key], entry
+  end
+
+  local ok_conn, conn = pcall(handler.connection_get_params, handler, entry.connection_id)
+  if not ok_conn then
+    local msg = "-- Failed to load connection params\n" .. tostring(conn)
+    preview_cache[cache_key] = msg
+    return msg, entry
+  end
+
+  local ok_cols, columns_or_err = pcall(handler.connection_get_columns, handler, entry.connection_id, {
+    table = entry.table,
+    schema = entry.schema,
+    materialization = entry.materialization,
+  })
+
+  local text
+  if ok_cols then
+    text = ddl.render_table_definition(conn, entry, columns_or_err)
+  else
+    text = table.concat({
+      ("-- %s"):format(ddl.format_schema_table(entry.schema, entry.table)),
+      "",
+      "-- Failed to load columns:",
+      tostring(columns_or_err),
+    }, "\n")
+  end
+
+  preview_cache[cache_key] = text
+  return text, entry
+end
+
+local function table_picker_previewer_spec(handler, preview_cache)
+  local builtin = require("fzf-lua.previewer.builtin")
+  local Previewer = builtin.base:extend()
+
+  function Previewer:new(o, resolved_opts)
+    Previewer.super.new(self, o, resolved_opts)
+  end
+
+  function Previewer:gen_winopts()
+    local winopts = {
+      wrap = false,
+      cursorline = false,
+      number = false,
+    }
+    return vim.tbl_extend("keep", winopts, self.winopts)
+  end
+
+  function Previewer:populate_preview_buf(entry_str)
+    if not self.win or not self.win:validate_preview() then
+      return
+    end
+
+    local text, entry = build_table_preview(handler, preview_cache, entry_str)
+    local tmpbuf = self:get_tmp_buffer()
+    vim.api.nvim_buf_set_lines(tmpbuf, 0, -1, false, vim.split(text, "\n", { plain = true }))
+    vim.bo[tmpbuf].filetype = "sql"
+    self:set_preview_buf(tmpbuf)
+    if entry then
+      self.win:update_preview_title((" %s "):format(ddl.format_schema_table(entry.schema, entry.table)))
+    end
+    self.win:update_preview_scrollbar()
+  end
+
+  return {
+    _ctor = function()
+      return Previewer
+    end,
   }
 end
 
@@ -271,8 +369,7 @@ function ui.drawer_pick_table(opts)
 
     fzf.fzf_exec(lines, {
       prompt = "Tables> ",
-      -- We provide a custom `preview` function, so disable fzf-lua's default previewer.
-      previewer = false,
+      previewer = table_picker_previewer_spec(handler, preview_cache),
       winopts = table_picker_winopts(),
       fzf_opts = {
         ["--delimiter"] = "\t",
@@ -280,83 +377,13 @@ function ui.drawer_pick_table(opts)
         ["--nth"] = "1,2",
         ["--header"] = "enter: jump  ctrl-r: refresh",
       },
-      preview = function(args)
-        local item = args and args[1] or nil
-        if not item or item == "" then
-          return ""
-        end
-
-        local parts = vim.split(item, "\t", { plain = true })
-        local conn_id = parts[3]
-        local schema = parts[4] ~= "" and parts[4] or nil
-        local tbl = parts[5]
-        local materialization = parts[6] ~= "" and parts[6] or nil
-
-        if not conn_id or conn_id == "" or not tbl or tbl == "" then
-          return item
-        end
-
-        local cache_key = table.concat({ conn_id, schema or "", tbl, materialization or "" }, "\0")
-        if preview_cache[cache_key] then
-          return preview_cache[cache_key]
-        end
-
-        local ok_conn, conn = pcall(handler.connection_get_params, handler, conn_id)
-        if not ok_conn then
-          local msg = "-- Failed to load connection params\n" .. tostring(conn)
-          preview_cache[cache_key] = msg
-          return msg
-        end
-
-        local ok_cols, columns_or_err = pcall(handler.connection_get_columns, handler, conn_id, {
-          table = tbl,
-          schema = schema,
-          materialization = materialization,
-        })
-
-        local text
-        if ok_cols then
-          text = ddl.render_table_definition(conn, {
-            connection_id = conn_id,
-            schema = schema,
-            table = tbl,
-            materialization = materialization,
-          }, columns_or_err)
-        else
-          text = table.concat({
-            ("-- %s"):format(ddl.format_schema_table(schema, tbl)),
-            "",
-            "-- Failed to load columns:",
-            tostring(columns_or_err),
-          }, "\n")
-        end
-
-        preview_cache[cache_key] = text
-        return text
-      end,
       actions = {
         ["default"] = function(selected)
           local item = selected and selected[1] or nil
-          if not item or item == "" then
+          local entry = parse_table_picker_entry(item)
+          if not entry then
             return
           end
-
-          local parts = vim.split(item, "\t", { plain = true })
-          local conn_id = parts[3]
-          local schema = parts[4] ~= "" and parts[4] or nil
-          local tbl = parts[5]
-          local materialization = parts[6] ~= "" and parts[6] or nil
-
-          if not conn_id or conn_id == "" or not tbl or tbl == "" then
-            return
-          end
-
-          local entry = {
-            connection_id = conn_id,
-            schema = schema,
-            table = tbl,
-            materialization = materialization,
-          }
 
           pcall(function()
             handler:apply_table_context(nil, entry, { notify = false })

@@ -759,9 +759,33 @@ function M.sorted_copy(items, sorter)
 end
 
 function M.buf_set_lines(bufnr, lines)
-  vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
+  local was_modifiable = vim.bo[bufnr].modifiable
+  vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
+  vim.bo[bufnr].modifiable = was_modifiable
+end
+
+function M.buf_append_text(bufnr, text, opts)
+  opts = opts or {}
+  local lines = vim.split(text or "", "\n", { plain = true })
+  if #lines == 0 then
+    lines = { "" }
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local buffer_empty = line_count == 1 and current_lines[1] == ""
+  local last_line = current_lines[#current_lines] or ""
+
+  if opts.leading_blank_line and not buffer_empty and last_line ~= "" then
+    table.insert(lines, 1, "")
+  end
+
+  local start_line = buffer_empty and 0 or line_count
+  local was_modifiable = vim.bo[bufnr].modifiable
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, start_line, line_count, false, lines)
+  vim.bo[bufnr].modifiable = was_modifiable
 end
 
 

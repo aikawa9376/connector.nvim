@@ -641,9 +641,7 @@ function DrawerUI:insert_query(text)
     return
   end
 
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
-  -- Insert a blank line then the query
-  vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, { "", text })
+  util.buf_append_text(bufnr, text, { leading_blank_line = true })
 
   -- Show the editor and move cursor to the inserted query
   if self.editor.window and vim.api.nvim_win_is_valid(self.editor.window) then
