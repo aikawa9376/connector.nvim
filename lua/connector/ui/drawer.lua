@@ -1,8 +1,8 @@
 local buffer_line = require("connector.ui.buffer_line")
 local call_history = require("connector.ui.call_history")
 local candies_module = require("connector.ui.candies")
-local ddl = require("connector.ddl")
 local float = require("connector.ui.float")
+local sqlgen = require("connector.sql.generator")
 local util = require("connector.util")
 
 local function err_to_string(err)
@@ -867,91 +867,22 @@ function DrawerUI:generate_query_for_table(node, action, explicit_cols)
     sel_cols = { node.column }
   end
 
-  local cols = sel_cols or all_cols
-
   local conn = nil
-  pcall(function() conn = self.handler:connection_get_params(node.connection_id) end)
-  local conn_type = (conn and conn.type and conn.type:lower()) or "sqlite"
-  local qual_table = util.qualify_table(conn_type, node.schema and node.schema ~= "" and node.schema or nil, node.table)
+  pcall(function()
+    conn = self.handler:connection_get_params(node.connection_id)
+  end)
 
-  local function quote(name)
-    return util.quote_identifier(conn_type, name)
-  end
-
-  local text = ""
-  if action == "select" then
-    if not cols then
-      text = ("SELECT * FROM %s;"):format(qual_table)
-    else
-      local quoted = {}
-      for _, n in ipairs(cols) do table.insert(quoted, quote(n)) end
-      text = ("SELECT %s FROM %s;"):format(table.concat(quoted, ", "), qual_table)
-    end
-  elseif action == "delete" then
-    local pk_names = {}
-    if cols_meta then
-      for _, c in ipairs(cols_meta) do if c.primary_key then table.insert(pk_names, c.name) end end
-    end
-    local where_clause = nil
-    if #pk_names > 0 then
-      local parts = {}
-      for _, pk in ipairs(pk_names) do table.insert(parts, ("%s = ?"):format(quote(pk))) end
-      where_clause = table.concat(parts, " AND ")
-    else
-      local key_col = (cols and cols[1]) or (all_cols and all_cols[1])
-      if key_col then
-        where_clause = ("%s = "):format(quote(key_col))
-      else
-        where_clause = ""
-      end
-    end
-    text = ("DELETE FROM %s WHERE %s;"):format(qual_table, where_clause)
-  elseif action == "update" then
-    local set_cols = {}
-    if cols and #cols > 0 then
-      for _, c in ipairs(cols) do table.insert(set_cols, ("%s = ?"):format(quote(c))) end
-    elseif cols_meta then
-      for _, c in ipairs(cols_meta) do if not c.primary_key then table.insert(set_cols, ("%s = ?"):format(quote(c.name))) end end
-    end
-    local set_clause = table.concat(set_cols, ", ")
-    if set_clause == "" then
-      set_clause = "-- TODO: set_column = ?"
-    end
-
-    local pk_names = {}
-    if cols_meta then for _, c in ipairs(cols_meta) do if c.primary_key then table.insert(pk_names, c.name) end end end
-    local where_clause = nil
-    if #pk_names > 0 then
-      local parts = {}
-      for _, pk in ipairs(pk_names) do table.insert(parts, ("%s = ?"):format(quote(pk))) end
-      where_clause = table.concat(parts, " AND ")
-    else
-      local key_col = (cols and cols[1]) or (all_cols and all_cols[1])
-      if key_col then
-        where_clause = ("%s = "):format(quote(key_col))
-      else
-        where_clause = ""
-      end
-    end
-    text = ("UPDATE %s SET %s WHERE %s;"):format(qual_table, set_clause, where_clause)
-  elseif action == "insert" then
-    local ins_cols = cols or all_cols
-    if not ins_cols or #ins_cols == 0 then
-      text = ("INSERT INTO %s DEFAULT VALUES;"):format(qual_table)
-    else
-      local quoted = {}
-      local placeholders = {}
-      for _, c in ipairs(ins_cols) do table.insert(quoted, quote(c)); table.insert(placeholders, "?") end
-      text = ("INSERT INTO %s (%s) VALUES (%s);"):format(qual_table, table.concat(quoted, ", "), table.concat(placeholders, ", "))
-    end
-  elseif action == "ddl" then
-    text = ddl.render_table_definition(conn, {
-      connection_id = node.connection_id,
-      schema = node.schema,
-      table = node.table,
-      materialization = node.materialization,
-    }, cols_meta)
-  end
+  local text = sqlgen.generate_table_query({
+    connection = conn,
+    connection_id = node.connection_id,
+    action = action,
+    schema = node.schema,
+    table = node.table,
+    materialization = node.materialization,
+    selected_columns = sel_cols,
+    all_columns = all_cols,
+    columns_meta = cols_meta,
+  })
 
   if text and text ~= "" then
     self:insert_query(text)
