@@ -480,6 +480,8 @@ local MUTATING_SQL_KEYWORDS = {
   refresh = true,
 }
 
+local match_dollar_quote_tag
+
 function M.table_index_key(schema, tbl)
   if schema and schema ~= "" then
     return schema .. "\0" .. tbl
@@ -492,14 +494,138 @@ function M.query_has_side_effects(query)
     return false
   end
 
-  local normalized = query
-    :gsub("/%*.-%*/", " ")
-    :gsub("%-%-[^\n]*", " ")
-    :gsub("#[^\n]*", " ")
-    :lower()
+  local function statement_leading_keyword(statement)
+    local pos = 1
+    local len = #statement
+    local state = "normal"
+    local dollar_tag = nil
+    local depth = 0
+    local saw_with = false
 
-  for keyword in pairs(MUTATING_SQL_KEYWORDS) do
-    if normalized:find("%f[%a]" .. keyword .. "%f[%A]") then
+    while pos <= len do
+      local ch = statement:sub(pos, pos)
+      local next_ch = pos < len and statement:sub(pos + 1, pos + 1) or ""
+      local prev_ch = pos > 1 and statement:sub(pos - 1, pos - 1) or ""
+
+      if state == "line_comment" then
+        if ch == "\n" then
+          state = "normal"
+        end
+        pos = pos + 1
+      elseif state == "block_comment" then
+        if ch == "*" and next_ch == "/" then
+          state = "normal"
+          pos = pos + 2
+        else
+          pos = pos + 1
+        end
+      elseif state == "single_quote" then
+        if ch == "'" then
+          if next_ch == "'" then
+            pos = pos + 2
+          elseif prev_ch == "\\" then
+            pos = pos + 1
+          else
+            state = "normal"
+            pos = pos + 1
+          end
+        else
+          pos = pos + 1
+        end
+      elseif state == "double_quote" then
+        if ch == '"' then
+          if next_ch == '"' then
+            pos = pos + 2
+          else
+            state = "normal"
+            pos = pos + 1
+          end
+        else
+          pos = pos + 1
+        end
+      elseif state == "backtick_quote" then
+        if ch == "`" then
+          if next_ch == "`" then
+            pos = pos + 2
+          else
+            state = "normal"
+            pos = pos + 1
+          end
+        else
+          pos = pos + 1
+        end
+      elseif state == "dollar_quote" then
+        if dollar_tag and statement:sub(pos, pos + #dollar_tag - 1) == dollar_tag then
+          state = "normal"
+          pos = pos + #dollar_tag
+          dollar_tag = nil
+        else
+          pos = pos + 1
+        end
+      else
+        if ch == "-" and next_ch == "-" then
+          state = "line_comment"
+          pos = pos + 2
+        elseif ch == "#" then
+          state = "line_comment"
+          pos = pos + 1
+        elseif ch == "/" and next_ch == "*" then
+          state = "block_comment"
+          pos = pos + 2
+        elseif ch == "'" then
+          state = "single_quote"
+          pos = pos + 1
+        elseif ch == '"' then
+          state = "double_quote"
+          pos = pos + 1
+        elseif ch == "`" then
+          state = "backtick_quote"
+          pos = pos + 1
+        else
+          local tag = match_dollar_quote_tag(statement, pos)
+          if tag then
+            state = "dollar_quote"
+            dollar_tag = tag
+            pos = pos + #tag
+          elseif ch == "(" then
+            depth = depth + 1
+            pos = pos + 1
+          elseif ch == ")" then
+            depth = math.max(0, depth - 1)
+            pos = pos + 1
+          else
+            local s, e, word = statement:find("^([%a_][%w_]*)", pos)
+            if s then
+              local lowered = word:lower()
+              pos = e + 1
+              if depth == 0 then
+                if not saw_with then
+                  if lowered == "with" then
+                    saw_with = true
+                  else
+                    return lowered
+                  end
+                else
+                  if lowered ~= "recursive" and lowered ~= "as"
+                    and (SQL_KEYWORDS[lowered] or MUTATING_SQL_KEYWORDS[lowered]) then
+                    return lowered
+                  end
+                end
+              end
+            else
+              pos = pos + 1
+            end
+          end
+        end
+      end
+    end
+
+    return nil
+  end
+
+  for _, statement in ipairs(M.split_sql_statements(query)) do
+    local keyword = statement_leading_keyword(statement)
+    if keyword and MUTATING_SQL_KEYWORDS[keyword] then
       return true
     end
   end
@@ -514,7 +640,7 @@ local function push_sql_statement(statements, chunk)
   end
 end
 
-local function match_dollar_quote_tag(text, pos)
+match_dollar_quote_tag = function(text, pos)
   local rest = text:sub(pos)
   return rest:match("^%$[%a_][%w_]*%$") or rest:match("^%$%$")
 end

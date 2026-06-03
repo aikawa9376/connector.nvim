@@ -694,6 +694,10 @@ function Handler:candidates_for_ref(connection_id, ref)
     local entry = self:resolve_table_reference(connection_id, ref.schema, ref.table)
     return entry and { entry } or {}
   end
+  local current = self:lookup_table_index(connection_id, nil, ref.table)
+  if current then
+    return { current }
+  end
   return self:find_table_entries(connection_id, ref.table)
 end
 
