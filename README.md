@@ -23,6 +23,9 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
 ```lua
 {
   "aikawa9376/connector.nvim",
+  cmd = "Connector",
+  -- If you configured lazy.nvim with `defaults = { lazy = false }`, you must opt back in:
+  -- lazy = true,
 
   -- Option A (recommended): let lazy.nvim run cargo so the build log shows up in Lazy's UI.
   -- connector.nvim will pick up `target/release/connector-backend` automatically.
@@ -38,6 +41,11 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
   end,
 }
 ```
+
+Notes:
+- With `cmd = "Connector"`, lazy.nvim creates a placeholder `:Connector` command at startup. This does **not** mean the plugin is loaded.
+- To verify, check `:lua print(vim.g.loaded_connector)` (should be `nil` on startup, `1` after running `:Connector`).
+- If something calls `require("connector")` during startup (e.g. completion provider config), the plugin will be loaded eagerly.
 
 ## Usage
 
