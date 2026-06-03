@@ -4,7 +4,6 @@ local candies_module = require("connector.ui.candies")
 local ddl = require("connector.ddl")
 local float = require("connector.ui.float")
 local util = require("connector.util")
-local function dbg() end
 
 local function err_to_string(err)
   if err == nil then
@@ -797,7 +796,6 @@ function DrawerUI:get_visual_selection_range()
   if self._explicit_visual_range then
     local s = self._explicit_visual_range.start_row
     local e = self._explicit_visual_range.end_row
-    dbg(("get_visual_selection_range: using explicit range: %s..%s"):format(tostring(s), tostring(e)))
     if s and e and s ~= 0 and e ~= 0 then
       if s > e then s, e = e, s end
       return s, e
@@ -807,7 +805,6 @@ function DrawerUI:get_visual_selection_range()
   -- Try the regular visual marks first
   local start_row = vim.fn.getpos("'<")[2]
   local end_row = vim.fn.getpos("'>")[2]
-  dbg(("get_visual_selection_range: fallback marks: start=%s end=%s mode=%s"):format(tostring(start_row), tostring(end_row), vim.fn.mode()))
   if start_row and end_row and start_row ~= 0 and end_row ~= 0 then
     if start_row > end_row then start_row, end_row = end_row, start_row end
     return start_row, end_row
@@ -821,24 +818,20 @@ function DrawerUI:get_visual_selection_range()
     local vpos = vim.fn.getpos('v')
     local vrow = vpos and vpos[2] or 0
     local currow = vim.api.nvim_win_get_cursor(0)[1]
-    dbg(("get_visual_selection_range: visual mode fallback vrow=%s currow=%s"):format(tostring(vrow), tostring(currow)))
     if vrow and vrow ~= 0 then
       if vrow > currow then vrow, currow = currow, vrow end
       return vrow, currow
     end
   end
 
-  dbg("get_visual_selection_range: no marks")
   return nil
 end
 
 function DrawerUI:get_selected_columns_from_visual(node)
   local s, e = self:get_visual_selection_range()
   if not s then
-    dbg("no visual selection")
     return nil
   end
-  dbg(("visual selection range: %s..%s"):format(s, e))
   local cols = {}
   for i = s, e do
     local n = self.line_map[i]
@@ -848,7 +841,6 @@ function DrawerUI:get_selected_columns_from_visual(node)
       end
     end
   end
-  dbg(("selected columns from visual: %s"):format(vim.inspect(cols)))
   if #cols == 0 then return nil end
   return cols
 end
@@ -868,9 +860,7 @@ end
 function DrawerUI:generate_query_for_table(node, action, explicit_cols)
   -- action is one of: "select", "update", "delete", "insert", "ddl"
   local sel_cols = explicit_cols or self:get_selected_columns_from_visual(node)
-  dbg(("generate_query_for_table called: action=%s table=%s schema=%s explicit=%s sel_cols=%s"):format(tostring(action), tostring(node and node.table), tostring(node and node.schema), vim.inspect(explicit_cols), vim.inspect(sel_cols)))
   local all_cols, cols_meta = self:get_all_columns_for_table(node)
-  dbg(("all_cols=%s cols_meta_count=%s"):format(vim.inspect(all_cols), tostring(cols_meta and #cols_meta or 0)))
 
   -- If no visual selection and this was invoked from a single column click, prefer that column
   if not sel_cols and node and node.kind == "column" and node.column then
@@ -964,7 +954,6 @@ function DrawerUI:generate_query_for_table(node, action, explicit_cols)
   end
 
   if text and text ~= "" then
-    dbg(("generated query:\n%s"):format(text))
     self:insert_query(text)
   end
 end
