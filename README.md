@@ -4,7 +4,7 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
 
 ## Current scope
 
-- 4-pane workflow: drawer, editor, result, call log
+- connector workflow with configurable history placement (bottom panel or drawer)
 - connection sources: memory, env, file
 - query execution from editor, current line, or selection
 - result paging and CSV/JSON/table export
@@ -58,6 +58,10 @@ Additional commands:
 
 ```lua
 require("connector").setup({
+  history = {
+    display = "drawer", -- or "panel"
+    drawer_max_items = 50,
+  },
   sources = {
     require("connector.sources").EnvSource:new("CONNECTOR_CONNECTIONS"),
     require("connector.sources").FileSource:new(vim.fn.stdpath("state") .. "/connector/connections.json"),
@@ -141,7 +145,11 @@ export CONNECTOR_CONNECTIONS='[
 - `i` ignore / unignore a database or connection for the current project
 - `a` add a new connection (context-aware: adds to the selected source/connection)
 - `f` toggle the "project only" scratchpad filter
+- `[[` / `]]` jump between top-level sections
+- expandable nodes below the top level show child counts where connector can derive them cheaply
+- when `history.display = "drawer"`, a collapsible `History` section is shown under `Scratchpads` (collapsed by default, showing up to `history.drawer_max_items`; `more…` opens the full list with fzf-lua when available)
 - `r` refresh the drawer view
+- `<C-c>` cancel the selected executing history entry
 
 ## Editor workflow
 
@@ -176,7 +184,7 @@ Override them with `vim.api.nvim_set_hl(0, ...)` if you want a different look.
 
 ## Layout behavior
 
-The default layout now keeps the drawer width and the result / call-log heights stable across temporary split changes (for example when another plugin opens and closes a window in the same tab), restores the configured connector layout sizes when you focus the connector tab again, and starts the call-log panel at the same default height as the result panel.
+The default layout keeps the drawer width and the result / call-log heights stable across temporary split changes (for example when another plugin opens and closes a window in the same tab) and restores the configured connector layout sizes when you focus the connector tab again. By default, history is rendered in the drawer (`history.display = "drawer"`); if you switch to `history.display = "panel"`, connector also opens the bottom history panel at the same default height as the result panel.
 
 Additional features
 

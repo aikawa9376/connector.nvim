@@ -1,4 +1,5 @@
 local buffer_line = require("connector.ui.buffer_line")
+local call_history = require("connector.ui.call_history")
 local candies_module = require("connector.ui.candies")
 local ddl = require("connector.ddl")
 local float = require("connector.ui.float")
@@ -43,6 +44,7 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
   local bufnr = vim.api.nvim_create_buf(false, true)
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].filetype = "connector-drawer"
+  local history_view = state_helpers and state_helpers.get_history_view and state_helpers.get_history_view() or {}
 
   local o = {
     handler = handler,
@@ -56,11 +58,16 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
     expanded = {
       ["root:connections"] = true,
       ["root:scratchpads"] = true,
+      ["root:history"] = false,
     },
     candies = config.disable_candies and {} or vim.tbl_deep_extend("force", candies_module.drawer_defaults(), config.candies or {}),
+    history_disable_candies = history_view.disable_candies == true,
+    history_candies = history_view.candies or candies_module.call_log_defaults(),
+    history_max_items = math.max(1, math.floor(history_view.max_items or 50)),
     state_helpers = state_helpers or {},
     -- remember last active namespace to avoid repeatedly reopening the same note
     last_active_namespace = nil,
+    refresh_scheduled = false,
   }
   setmetatable(o, self)
   self.__index = self
@@ -90,8 +97,30 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
   editor:register_event_listener("current_note_changed", function()
     o:refresh()
   end)
+  if o:history_in_drawer() then
+    handler:register_event_listener("call_state_changed", function()
+      o:schedule_refresh()
+    end)
+  end
 
   return o
+end
+
+function DrawerUI:history_in_drawer()
+  return self.state_helpers.get_history_display and self.state_helpers.get_history_display() == "drawer" or false
+end
+
+function DrawerUI:schedule_refresh()
+  if self.refresh_scheduled then
+    return
+  end
+  self.refresh_scheduled = true
+  vim.schedule(function()
+    self.refresh_scheduled = false
+    if vim.api.nvim_buf_is_valid(self.bufnr) and self.window and vim.api.nvim_win_is_valid(self.window) then
+      self:refresh()
+    end
+  end)
 end
 
 function DrawerUI:capture_visual_range()
@@ -249,6 +278,8 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts
     return candies_module.get(self.candies, "remove", "none")
   elseif kind == "connection_error" then
     return candies_module.get(self.candies, "remove", "none")
+  elseif kind == "history_more" then
+    return candies_module.get(self.candies, "history", "none")
   elseif kind == "schema" or kind == "dbroot" then
     return candies_module.get(self.candies, "schema")
   elseif kind == "table" then
@@ -293,6 +324,9 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
   if self.config.disable_candies then
     local active = opts.active and "● " or ""
     buffer_line.append(builder, active .. label)
+    if depth >= 1 and opts.child_count ~= nil then
+      buffer_line.append(builder, (" (%d)"):format(opts.child_count), "Comment")
+    end
   else
     local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active, opts)
     local c = vim.deepcopy(candy)
@@ -394,10 +428,39 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
 
     local text_hl = c.text_highlight
     buffer_line.append(builder, label, text_hl ~= "" and text_hl or nil)
+    if depth >= 1 and opts.child_count ~= nil then
+      buffer_line.append(builder, (" (%d)"):format(opts.child_count), "Comment")
+    end
   end
 
   table.insert(lines, builder)
   self.line_map[#lines] = node
+end
+
+function DrawerUI:cached_structure_count(connection_id, database)
+  local cache_key
+  if database and database ~= "" then
+    cache_key = connection_id .. ":" .. database
+  else
+    cache_key = connection_id
+  end
+
+  local items = self.handler.structure_cache and self.handler.structure_cache[cache_key] or nil
+  return type(items) == "table" and #items or nil
+end
+
+function DrawerUI:add_history_call_line(lines, depth, call)
+  table.insert(lines, call_history.build_call_line(call, {
+    indent = string.rep("  ", depth),
+    disable_candies = self.history_disable_candies,
+    candies = self.history_candies,
+    width = 52,
+  }))
+  self.line_map[#lines] = {
+    kind = "history_call",
+    key = "history_call:" .. call.id,
+    call_id = call.id,
+  }
 end
 
 function DrawerUI:is_expanded(key)
@@ -406,6 +469,52 @@ end
 
 function DrawerUI:toggle_node(key)
   self.expanded[key] = not self.expanded[key]
+end
+
+function DrawerUI:top_level_lines()
+  local lines = {}
+  for line, node in pairs(self.line_map) do
+    if type(node) == "table" and type(node.key) == "string" and vim.startswith(node.key, "root:") then
+      table.insert(lines, line)
+    end
+  end
+  table.sort(lines)
+  return lines
+end
+
+function DrawerUI:jump_top_level(direction)
+  if not self.window or not vim.api.nvim_win_is_valid(self.window) then
+    return
+  end
+
+  local roots = self:top_level_lines()
+  if #roots == 0 then
+    return
+  end
+
+  local current_line = vim.api.nvim_win_get_cursor(self.window)[1]
+  local target = nil
+
+  if direction == "next" then
+    for _, line in ipairs(roots) do
+      if line > current_line then
+        target = line
+        break
+      end
+    end
+    target = target or roots[1]
+  else
+    for index = #roots, 1, -1 do
+      local line = roots[index]
+      if line < current_line then
+        target = line
+        break
+      end
+    end
+    target = target or roots[#roots]
+  end
+
+  pcall(vim.api.nvim_win_set_cursor, self.window, { target, 0 })
 end
 
 function DrawerUI:connection_prompt(initial, done)
@@ -494,13 +603,14 @@ end
 
 function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ignored)
   local db_key = ("database:%s:%s"):format(conn.id, database)
+  local child_count = self:cached_structure_count(conn.id, database)
   self:add_line(lines, depth, database, {
     kind = "database",
     key = db_key,
     connection_id = conn.id,
     database = database,
     ignored = ignored == true,
-  }, { expandable = true, active = database == current_db, ignored = ignored == true })
+  }, { expandable = true, active = database == current_db, ignored = ignored == true, child_count = child_count })
   if self:is_expanded(db_key) then
     local ok_structure, items = pcall(self.handler.connection_get_structure, self.handler, conn.id, database)
     if ok_structure and type(items) == "table" then
@@ -967,11 +1077,17 @@ function DrawerUI:refresh()
       local show_source = (#source_connections > 0) or type(source.create) == "function" or type(source.file) == "function"
       if show_source then
         local source_active = active_conn and active_conn.source_id == source:name()
+        local visible_connections = 0
+        for _, conn in ipairs(source_connections) do
+          if not get_database_meta(conn).connection_ignored then
+            visible_connections = visible_connections + 1
+          end
+        end
         self:add_line(lines, 1, source:name(), {
           kind = "source",
           key = source_key,
           source_id = source:name(),
-        }, { expandable = true, active = source_active })
+        }, { expandable = true, active = source_active, child_count = visible_connections })
         if self:is_expanded(source_key) then
           for _, conn in ipairs(source_connections) do
             local active = self.handler:get_current_connection()
@@ -979,6 +1095,12 @@ function DrawerUI:refresh()
             local db_meta = get_database_meta(conn)
             local has_databases = db_meta.ok and #db_meta.databases > 0
             local conn_key = "connection:" .. conn.id
+            local child_count = nil
+            if has_databases then
+              child_count = #db_meta.visible
+            else
+              child_count = self:cached_structure_count(conn.id)
+            end
 
             -- If the whole connection is ignored for the current project, don't show it in the main Connections list
             if not db_meta.connection_ignored then
@@ -987,7 +1109,7 @@ function DrawerUI:refresh()
                 key = conn_key,
                 connection_id = conn.id,
                 source_id = source:name(),
-              }, { expandable = true, active = is_active })
+              }, { expandable = true, active = is_active, child_count = child_count })
               if self:is_expanded(conn_key) then
                 if has_databases then
                   for _, database in ipairs(db_meta.visible) do
@@ -1025,7 +1147,7 @@ function DrawerUI:refresh()
       self:add_line(lines, 1, "ignore", {
         kind = "ignored_databases_group",
         key = ignore_key,
-      }, { expandable = true, ignored = true })
+      }, { expandable = true, ignored = true, child_count = vim.tbl_count(ignored_by_connection) })
       if self:is_expanded(ignore_key) then
         local conn_ids = vim.tbl_keys(ignored_by_connection)
         table.sort(conn_ids, function(left, right)
@@ -1034,11 +1156,17 @@ function DrawerUI:refresh()
         for _, conn_id in ipairs(conn_ids) do
           local entry = ignored_by_connection[conn_id]
           local conn_key = "ignored_connection:" .. conn_id
+          local child_count = nil
+          if not entry.connection_ignored then
+            child_count = #entry.databases
+          else
+            child_count = self:cached_structure_count(entry.conn.id)
+          end
           self:add_line(lines, 2, entry.conn.name, {
             kind = "ignored_connection_group",
             key = conn_key,
             connection_id = conn_id,
-          }, { expandable = true, ignored = true })
+          }, { expandable = true, ignored = true, child_count = child_count })
           if self:is_expanded(conn_key) then
             -- If connection-level ignore is set, show its databases under the ignore group
             if entry.connection_ignored then
@@ -1146,6 +1274,8 @@ function DrawerUI:refresh()
         local data = nodes[key]
         local ns_key = "scratchpad_ns:" .. data.full_path
         local is_active = data.is_project and (key == active_project_name)
+        local notes = self.editor:namespace_get_notes(data.full_path)
+        local child_count = vim.tbl_count(data.nodes) + #notes
 
         self:add_line(lines, depth, key, {
           kind = "scratchpad_dir",
@@ -1154,12 +1284,13 @@ function DrawerUI:refresh()
         }, {
           expandable = true,
           is_project = data.is_project,
-          is_active_project = is_active
+          is_active_project = is_active,
+          child_count = child_count,
         })
 
         if self:is_expanded(ns_key) then
           render_tree(data.nodes, depth + 1)
-          for _, note in ipairs(self.editor:namespace_get_notes(data.full_path)) do
+          for _, note in ipairs(notes) do
             self:add_line(lines, depth + 1, note.name, {
               kind = "scratchpad",
               key = "scratchpad:" .. note.id,
@@ -1172,6 +1303,36 @@ function DrawerUI:refresh()
     end
     render_tree(tree, 1)
 
+  end
+
+  if self:history_in_drawer() then
+    table.insert(lines, buffer_line.new_builder())
+    self:add_line(lines, 0, "History", {
+      kind = "root",
+      key = "root:history",
+    }, { expandable = true })
+    if self:is_expanded("root:history") then
+      local calls = call_history.visible_calls(self.handler)
+      if #calls == 0 then
+        local builder = buffer_line.new_builder()
+        buffer_line.append(builder, "  History will be displayed here!", "MoreMsg")
+        table.insert(lines, builder)
+        self.line_map[#lines] = { kind = "history_empty", key = "history:empty" }
+      else
+        local max_items = self.history_max_items
+        local shown = math.min(#calls, max_items)
+        for index = 1, shown do
+          local call = calls[index]
+          self:add_history_call_line(lines, 1, call)
+        end
+        if #calls > shown then
+          self:add_line(lines, 1, ("more… (%d remaining)"):format(#calls - shown), {
+            kind = "history_more",
+            key = "history:more",
+          })
+        end
+      end
+    end
   end
 
   if not self.config.disable_help then
@@ -1188,7 +1349,9 @@ function DrawerUI:refresh()
       self:add_line(lines, 1, "i: ignore/unignore database or connection for current project", { kind = "help", key = "help:5" })
       self:add_line(lines, 1, "a: add connection (context-aware)", { kind = "help", key = "help:6" })
       self:add_line(lines, 1, "f: toggle project-only scratchpad filter", { kind = "help", key = "help:7" })
-      self:add_line(lines, 1, "r: refresh", { kind = "help", key = "help:8" })
+      self:add_line(lines, 1, "[[ / ]]: jump between top-level sections", { kind = "help", key = "help:8" })
+      self:add_line(lines, 1, "<C-c>: cancel an executing history entry", { kind = "help", key = "help:9" })
+      self:add_line(lines, 1, "r: refresh", { kind = "help", key = "help:10" })
     end
   end
 
@@ -1230,6 +1393,16 @@ function DrawerUI:do_action(action)
 
   if action == "refresh" then
     self:refresh()
+    return
+  end
+
+  if action == "jump_next_root" then
+    self:jump_top_level("next")
+    return
+  end
+
+  if action == "jump_prev_root" then
+    self:jump_top_level("prev")
     return
   end
 
@@ -1350,6 +1523,21 @@ function DrawerUI:do_action(action)
       self:table_action(node)
     elseif node.kind == "column" then
       self:open_query_action_menu(node)
+    elseif node.kind == "history_call" then
+      local call = self.handler:get_call(node.call_id)
+      if call and call.state == "history" then
+        self.handler:call_reexecute(node.call_id, function(new_call)
+          if new_call then
+            self.result:set_call(new_call)
+          end
+        end)
+      elseif call and (call.state == "archived" or call.state == "executing") then
+        self.result:set_call(call)
+      end
+    elseif node.kind == "history_more" then
+      if self.state_helpers.pick_history_calls then
+        self.state_helpers.pick_history_calls()
+      end
     elseif node.kind == "database" then
       self.handler:set_current_connection(node.connection_id)
       self.handler:connection_select_database(node.connection_id, node.database)
@@ -1373,6 +1561,16 @@ function DrawerUI:do_action(action)
       })
     elseif node.kind == "scratchpad" then
       self.editor:set_current_note(node.note_id)
+    end
+    return
+  end
+
+  if action == "cancel_call" then
+    if node.kind == "history_call" then
+      local call = self.handler:get_call(node.call_id)
+      if call and call.state == "executing" then
+        self.handler:call_cancel(node.call_id)
+      end
     end
     return
   end

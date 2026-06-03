@@ -16,6 +16,8 @@ function config.default()
     history = {
       path = vim.fs.joinpath(vim.fn.stdpath("state"), "connector", "query_history.json"),
       max_entries = 1000,
+      display = "drawer",
+      drawer_max_items = 50,
     },
     drawer = {
       project_filter_only_current = false,
@@ -32,6 +34,9 @@ function config.default()
         { key = "a", mode = "n", action = "action_add" },
         { key = "f", mode = "n", action = "action_toggle_filter" },
         { key = "o", mode = "n", action = "toggle" },
+        { key = "[[", mode = "n", action = "jump_prev_root" },
+        { key = "]]", mode = "n", action = "jump_next_root" },
+        { key = "<C-c>", mode = "n", action = "cancel_call" },
       },
 
     },
@@ -111,10 +116,18 @@ function config.validate(cfg)
     window_layout = { cfg.window_layout, "table" },
   })
   vim.validate({
+    history_display = { cfg.history.display, "string" },
+    history_drawer_max_items = { cfg.history.drawer_max_items, "number" },
     window_layout_open = { cfg.window_layout.open, "function" },
     window_layout_close = { cfg.window_layout.close, "function" },
     window_layout_is_open = { cfg.window_layout.is_open, "function" },
   })
+  if cfg.history.display ~= "panel" and cfg.history.display ~= "drawer" then
+    error("history.display must be 'panel' or 'drawer'")
+  end
+  if cfg.history.drawer_max_items < 1 then
+    error("history.drawer_max_items must be >= 1")
+  end
 end
 
 return config
