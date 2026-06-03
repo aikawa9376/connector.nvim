@@ -430,23 +430,29 @@ function EditorUI:update_winbar()
   local branch = project.branch
   local file_name = note.name or vim.fs.basename(note.file):gsub("%.sql$", "")
 
-  local left_parts = {
-    WINBAR_ICONS.project .. " " .. project_name,
-  }
+  local inner_sep = (self.config and self.config.winbar_separator) or "/"
+  local section_sep = (self.config and self.config.winbar_section_separator) or " "
+
+  local project_items = { project_name }
   if branch and branch ~= "" then
-    table.insert(left_parts, branch)
+    table.insert(project_items, branch)
   end
-  table.insert(left_parts, file_name)
+  table.insert(project_items, file_name)
+  local project_section = WINBAR_ICONS.project .. " " .. table.concat(project_items, inner_sep)
+
+  local sections = { project_section }
 
   local database_name, table_name = self:current_target_parts()
   if database_name and database_name ~= "" then
-    table.insert(left_parts, WINBAR_ICONS.database .. " " .. database_name)
+    local db_items = { database_name }
+    if table_name and table_name ~= "" then
+      table.insert(db_items, table_name)
+    end
+    local db_section = WINBAR_ICONS.database .. " " .. table.concat(db_items, inner_sep)
+    table.insert(sections, db_section)
   end
-  if table_name and table_name ~= "" then
-    table.insert(left_parts, table_name)
-  end
-  local sep = (self.config and self.config.winbar_separator) or "/"
-  local summary = table.concat(left_parts, sep)
+
+  local summary = table.concat(sections, section_sep)
 
   local query_count = self:current_note_query_count(note)
   local right = ("%d %s"):format(query_count, query_count == 1 and "query" or "queries")
@@ -508,11 +514,18 @@ end
 
 local function get_visual_lines(editor, bufnr)
   local explicit = editor and editor.explicit_visual_range or nil
-  local start_row = explicit and explicit.start_row or vim.fn.getpos("'<")[2]
-  local end_row = explicit and explicit.end_row or vim.fn.getpos("'>")[2]
   if editor then
     editor.explicit_visual_range = nil
   end
+
+  -- Only use the captured visual range. Do NOT fall back to '< / '>
+  -- because those marks can be stale when running actions from normal mode.
+  if not explicit then
+    return nil
+  end
+
+  local start_row = explicit.start_row or 0
+  local end_row = explicit.end_row or 0
   if start_row == 0 or end_row == 0 then
     return nil
   end
@@ -662,7 +675,13 @@ function EditorUI:do_action(action)
     if lines then
       query = table.concat(lines, "\n")
     else
-      query = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+      -- `<C-Space>`: run current selection OR current line (not the whole file).
+      query = vim.api.nvim_get_current_line()
+    end
+
+    if not query or query:match("^%s*$") then
+      util.notify("No query selected", vim.log.levels.INFO)
+      return
     end
 
     local conn = self.handler:get_current_connection()
