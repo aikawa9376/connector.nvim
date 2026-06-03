@@ -263,6 +263,18 @@ function Handler:get_call(id)
   return call and vim.deepcopy(call) or nil
 end
 
+function Handler:call_reexecute(id, done)
+  local call = assert(self.calls[id], "call not found: " .. tostring(id))
+  assert(call.query and vim.trim(call.query) ~= "", "call has no query to execute")
+  assert(call.connection_id and self.connections[call.connection_id], "call has no available connection to execute")
+
+  if self.current_connection_id ~= call.connection_id then
+    self:set_current_connection(call.connection_id)
+  end
+
+  return self:connection_execute(call.connection_id, call.query, done)
+end
+
 function Handler:current_project()
   if self.project_provider then
     local ok, project = pcall(self.project_provider)

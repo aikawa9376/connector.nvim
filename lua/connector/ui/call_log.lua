@@ -1,4 +1,5 @@
 local buffer_line = require("connector.ui.buffer_line")
+local call_history = require("connector.ui.call_history")
 local candies_module = require("connector.ui.candies")
 local util = require("connector.util")
 
@@ -36,37 +37,16 @@ function CallLogUI:new(handler, result, config)
   return o
 end
 
-function CallLogUI:state_preview(state)
-  local candy = candies_module.get(self.candies, state, "unknown")
-  local preview = candy.icon
-  if not preview or preview == "" then
-    preview = candies_module.state_initials(state)
-  end
-  return buffer_line.pad_display(preview, 3), candy
-end
-
 function CallLogUI:build_call_line(call)
-  local builder = buffer_line.new_builder()
-  local query = call.query:gsub("%s+", " ")
-
-  if self.config.disable_candies then
-    buffer_line.append(builder, ("[%s] %s"):format(call.state, query))
-    return builder
-  end
-
-  local preview, candy = self:state_preview(call.state)
-  buffer_line.append(builder, preview, candy.icon_highlight)
-  -- Use the padded preview to provide consistent spacing between icon and query. Avoid extra separator glyph.
-  buffer_line.append(builder, buffer_line.truncate_display(query, 40), candy.text_highlight ~= "" and candy.text_highlight or nil)
-  return builder
+  return call_history.build_call_line(call, {
+    disable_candies = self.config.disable_candies,
+    candies = self.candies,
+    width = 40,
+  })
 end
 
 function CallLogUI:refresh()
-  local connection = self.handler:get_current_connection()
-  local calls = connection and self.handler:connection_get_calls(connection.id) or {}
-  if #calls == 0 then
-    calls = self.handler:get_calls()
-  end
+  local calls = call_history.visible_calls(self.handler)
   local lines = {}
   self.line_map = {}
 
@@ -102,7 +82,13 @@ function CallLogUI:do_action(action)
   end
   if action == "show_result" then
     local call = self.handler:get_call(call_id)
-    if call and (call.state == "archived" or call.state == "executing" or call.state == "history") then
+    if call and call.state == "history" then
+      self.handler:call_reexecute(call_id, function(new_call)
+        if new_call then
+          self.result:set_call(new_call)
+        end
+      end)
+    elseif call and (call.state == "archived" or call.state == "executing") then
       self.result:set_call(call)
     end
   elseif action == "cancel_call" then

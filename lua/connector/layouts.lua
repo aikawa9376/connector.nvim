@@ -141,6 +141,7 @@ function layouts.Default:open()
   if project then
     state_api.set_current_project(project, vim.api.nvim_get_current_buf())
   end
+  local history_display = (((state_api.config() or {}).history or {}).display) or "panel"
 
   vim.cmd("tabnew")
   self.tabpage = vim.api.nvim_get_current_tabpage()
@@ -157,9 +158,13 @@ function layouts.Default:open()
   self.windows.drawer = vim.api.nvim_get_current_win()
   api_ui.drawer_show(self.windows.drawer)
 
-  vim.cmd(("belowright %ssplit"):format(self.call_log_height))
-  self.windows.call_log = vim.api.nvim_get_current_win()
-  api_ui.call_log_show(self.windows.call_log)
+  if history_display == "panel" then
+    vim.cmd(("belowright %ssplit"):format(self.call_log_height))
+    self.windows.call_log = vim.api.nvim_get_current_win()
+    api_ui.call_log_show(self.windows.call_log)
+  else
+    self.windows.call_log = nil
+  end
   vim.api.nvim_set_current_win(self.windows.editor)
   self:apply_window_pinning()
   self:setup_autocmds()

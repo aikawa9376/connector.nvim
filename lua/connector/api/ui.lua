@@ -1,4 +1,5 @@
 local ddl = require("connector.ddl")
+local history_module = require("connector.history")
 local state = require("connector.api.state")
 local util = require("connector.util")
 
@@ -92,6 +93,124 @@ local function scratchpad_picker_winopts()
   }
 end
 
+local function history_picker_winopts()
+  return scratchpad_picker_winopts()
+end
+
+local function parse_history_call_picker_entry(item, calls_by_id)
+  if not item or item == "" then
+    return nil
+  end
+
+  local parts = vim.split(item, "\t", { plain = true })
+  local id = parts[2]
+  if not id or id == "" then
+    return nil
+  end
+
+  return calls_by_id[id]
+end
+
+local function build_history_call_preview(call)
+  if not call then
+    return ""
+  end
+
+  local handler = state.handler()
+  local conn = call.connection_id and handler.connections and handler.connections[call.connection_id] or nil
+  local lines = {}
+
+  table.insert(lines, ("-- state: %s"):format(call.state or "unknown"))
+  if conn then
+    table.insert(lines, ("-- connection: %s"):format(conn.name or conn.id))
+  elseif call.connection_id then
+    table.insert(lines, ("-- connection: %s"):format(call.connection_id))
+  end
+  if call.project and call.project ~= "" then
+    local scope = call.branch and call.branch ~= "" and ("%s/%s"):format(call.project, call.branch) or call.project
+    table.insert(lines, ("-- scope: %s"):format(scope))
+  end
+  if call.completed_at and call.completed_at ~= "" then
+    table.insert(lines, ("-- completed: %s"):format(call.completed_at))
+  elseif call.started_at and call.started_at ~= "" then
+    table.insert(lines, ("-- started: %s"):format(call.started_at))
+  end
+  table.insert(lines, "")
+  vim.list_extend(lines, vim.split(call.query or "", "\n", { plain = true }))
+
+  return table.concat(lines, "\n")
+end
+
+local function history_call_picker_previewer_spec(calls_by_id)
+  local builtin = require("fzf-lua.previewer.builtin")
+  local Previewer = builtin.base:extend()
+
+  function Previewer:new(o, resolved_opts)
+    Previewer.super.new(self, o, resolved_opts)
+  end
+
+  function Previewer:gen_winopts()
+    return vim.tbl_extend("keep", {
+      wrap = false,
+      cursorline = false,
+      number = false,
+    }, self.winopts)
+  end
+
+  function Previewer:populate_preview_buf(entry_str)
+    if not self.win or not self.win:validate_preview() then
+      return
+    end
+
+    local call = parse_history_call_picker_entry(entry_str, calls_by_id)
+    local text = build_history_call_preview(call)
+    local tmpbuf = self:get_tmp_buffer()
+    vim.api.nvim_buf_set_lines(tmpbuf, 0, -1, false, vim.split(text, "\n", { plain = true }))
+    vim.bo[tmpbuf].filetype = "sql"
+    self:set_preview_buf(tmpbuf)
+    if call then
+      self.win:update_preview_title((" %s "):format(call.state or "history"))
+    end
+    self.win:update_preview_scrollbar()
+  end
+
+  return {
+    _ctor = function()
+      return Previewer
+    end,
+  }
+end
+
+local function open_history_call(call)
+  if not call or not call.id then
+    return
+  end
+
+  ensure_layout_open()
+  local handler = state.handler()
+  local fresh = handler:get_call(call.id) or call
+  if fresh and fresh.state == "history" then
+    handler:call_reexecute(fresh.id, function(new_call)
+      if new_call then
+        state.result():set_call(new_call)
+      end
+    end)
+  elseif fresh and (fresh.state == "archived" or fresh.state == "executing") then
+    state.result():set_call(fresh)
+  end
+end
+
+local function format_history_call_label(call, handler)
+  return history_module.format_entry({
+    project = call.project,
+    branch = call.branch,
+    connection_name = (handler.connections[call.connection_id] or {}).name,
+    executed_at = call.completed_at or call.started_at,
+    query = call.query,
+    query_preview = (call.query or ""):gsub("%s+", " "),
+  })
+end
+
 function ui.is_loaded()
   return state.is_ui_loaded()
 end
@@ -145,15 +264,24 @@ function ui.editor_do_action(action)
 end
 
 function ui.call_log_refresh()
-  state.call_log():refresh()
+  local call_log = state.call_log()
+  if call_log then
+    call_log:refresh()
+  end
 end
 
 function ui.call_log_show(winid)
-  state.call_log():show(winid)
+  local call_log = state.call_log()
+  if call_log then
+    call_log:show(winid)
+  end
 end
 
 function ui.call_log_do_action(action)
-  state.call_log():do_action(action)
+  local call_log = state.call_log()
+  if call_log then
+    call_log:do_action(action)
+  end
 end
 
 function ui.drawer_refresh()
@@ -166,6 +294,61 @@ end
 
 function ui.drawer_do_action(action)
   state.drawer():do_action(action)
+end
+
+function ui.pick_history_calls(opts)
+  opts = opts or {}
+
+  local handler = state.handler()
+  local calls = opts.calls or require("connector.ui.call_history").visible_calls(handler)
+  if #calls == 0 then
+    util.notify("No history entries found", vim.log.levels.INFO)
+    return
+  end
+
+  local calls_by_id = {}
+  for _, call in ipairs(calls) do
+    calls_by_id[call.id] = call
+  end
+
+  local ok_fzf, fzf = pcall(require, "fzf-lua")
+  if ok_fzf and fzf and type(fzf.fzf_exec) == "function" then
+    local lines = vim.tbl_map(function(call)
+      return table.concat({
+        format_history_call_label(call, handler),
+        call.id or "",
+      }, "\t")
+    end, calls)
+
+    fzf.fzf_exec(lines, {
+      prompt = "History> ",
+      previewer = history_call_picker_previewer_spec(calls_by_id),
+      winopts = history_picker_winopts(),
+      fzf_opts = {
+        ["--delimiter"] = "\t",
+        ["--with-nth"] = "1",
+        ["--nth"] = "1",
+        ["--header"] = "enter: show result",
+      },
+      actions = {
+        ["default"] = function(selected)
+          local item = selected and selected[1] or nil
+          local call = parse_history_call_picker_entry(item, calls_by_id)
+          open_history_call(call)
+        end,
+      },
+    })
+    return
+  end
+
+  vim.ui.select(calls, {
+    prompt = "Select history entry",
+    format_item = function(call)
+      return format_history_call_label(call, handler)
+    end,
+  }, function(choice, idx)
+    open_history_call(choice or (idx and calls[idx] or nil))
+  end)
 end
 
 function ui.result_set_call(call)

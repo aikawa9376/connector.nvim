@@ -1,4 +1,5 @@
 local CallLogUI = require("connector.ui.call_log")
+local candies_module = require("connector.ui.candies")
 local DrawerUI = require("connector.ui.drawer")
 local EditorUI = require("connector.ui.editor")
 local Handler = require("connector.handler")
@@ -65,6 +66,7 @@ local function setup_ui()
 
   -- Seed from the SQL buffer that opened connector. Non-SQL connector buffers must not change project context.
   m.current_project = m.current_project or set_project_from_buf(vim.api.nvim_get_current_buf())
+  local history_display = ((m.config or {}).history or {}).display or "panel"
 
   m.result = ResultUI:new(m.handler, m.config.result)
 
@@ -76,7 +78,11 @@ local function setup_ui()
     end,
   })
 
-  m.call_log = CallLogUI:new(m.handler, m.result, m.config.call_log)
+  if history_display == "panel" then
+    m.call_log = CallLogUI:new(m.handler, m.result, m.config.call_log)
+  else
+    m.call_log = nil
+  end
   m.editor = EditorUI:new(m.handler, m.result, m.config.editor, {
     get_current_project = function() return m.current_project end,
     set_current_project = function(project, bufnr)
@@ -87,8 +93,22 @@ local function setup_ui()
     end,
   }, m.config.result)
   m.result:set_editor_ui(m.editor)
+  local history_view = {
+    disable_candies = m.config.call_log.disable_candies == true,
+    candies = m.config.call_log.disable_candies and {} or vim.tbl_deep_extend(
+      "force",
+      candies_module.call_log_defaults(),
+      m.config.call_log.candies or {}
+    ),
+    max_items = (((m.config or {}).history or {}).drawer_max_items) or 50,
+  }
   m.drawer = DrawerUI:new(m.handler, m.editor, m.result, m.config.drawer, {
-    get_current_project = function() return m.current_project end
+    get_current_project = function() return m.current_project end,
+    get_history_display = function() return history_display end,
+    get_history_view = function() return history_view end,
+    pick_history_calls = function(opts)
+      return require("connector.api.ui").pick_history_calls(opts)
+    end,
   })
 
   m.editor:register_event_listener("current_note_changed", function(note)
