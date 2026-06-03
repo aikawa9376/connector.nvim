@@ -87,6 +87,9 @@ end, {
   nargs = "*",
   range = true,
   bang = true,
+  -- lazy.nvim creates a placeholder :Connector command when using `cmd = "Connector"`.
+  -- Overwrite it when the plugin is actually loaded.
+  force = true,
   complete = function(_, cmdline)
     local args = split_args(cmdline:gsub("^" .. COMMAND_NAME, ""))
     if #args <= 1 then
