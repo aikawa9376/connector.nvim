@@ -139,14 +139,10 @@ function M.install(config, opts)
     end
 
     if show_output then
+      -- rustc/cargo frequently prints progress logs to stderr even on success.
+      -- Don't surface those as Neovim "errors" (red), just display them as normal output.
       vim.schedule(function()
-        if is_err then
-          for _, line in ipairs(lines) do
-            vim.api.nvim_err_writeln(line)
-          end
-        else
-          vim.api.nvim_out_write(table.concat(lines, "\n") .. "\n")
-        end
+        vim.api.nvim_out_write(table.concat(lines, "\n") .. "\n")
       end)
     end
   end

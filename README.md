@@ -23,9 +23,16 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
 ```lua
 {
   "aikawa9376/connector.nvim",
-  build = function()
-    require("connector").install()
-  end,
+
+  -- Option A (recommended): let lazy.nvim run cargo so the build log shows up in Lazy's UI.
+  -- connector.nvim will pick up `target/release/connector-backend` automatically.
+  build = "cargo build --release --manifest-path Cargo.toml",
+
+  -- Option B: install the backend binary into stdpath("data")/connector/bin
+  -- build = function()
+  --   require("connector").install()
+  -- end,
+
   config = function()
     require("connector").setup()
   end,
