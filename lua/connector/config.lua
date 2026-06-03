@@ -68,6 +68,9 @@ function config.default()
     },
     editor = {
       directory = vim.fs.joinpath(vim.fn.stdpath("state"), "connector", "scratchpads"),
+      ---Separator used between winbar items on scratchpads.
+      ---Default is "/" (no spaces). Set to e.g. " / " or "  " if you want spacing.
+      winbar_separator = "/",
       mappings = {
         { key = "BB", mode = "v", action = "run_selection" },
         { key = "BB", mode = "n", action = "run_file" },

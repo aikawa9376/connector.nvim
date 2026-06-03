@@ -445,7 +445,8 @@ function EditorUI:update_winbar()
   if table_name and table_name ~= "" then
     table.insert(left_parts, table_name)
   end
-  local summary = table.concat(left_parts, "  ")
+  local sep = (self.config and self.config.winbar_separator) or "/"
+  local summary = table.concat(left_parts, sep)
 
   local query_count = self:current_note_query_count(note)
   local right = ("%d %s"):format(query_count, query_count == 1 and "query" or "queries")
