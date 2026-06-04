@@ -95,7 +95,16 @@ require("blink.cmp").setup({
   sources = {
     default = { "lsp", "path", "buffer", "connector" },
     providers = {
-      connector = require("connector").blink_source(),
+      -- Avoid `require("connector")` at startup so connector.nvim can stay lazy-loaded.
+      -- blink.cmp will require this module when the source is actually used.
+      connector = {
+        module = "connector.blink",
+        name = "Connector",
+        async = true,
+        min_keyword_length = 0,
+        -- (optional) same opts as `require("connector").blink_source({ ... })`
+        opts = {},
+      },
     },
   },
 })
