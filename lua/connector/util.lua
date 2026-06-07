@@ -270,7 +270,8 @@ end
 function M.expand_connection(connection)
   local copy = vim.deepcopy(connection)
   copy.url = M.expand_template(copy.url or "")
-  if copy.type == "sqlite" or copy.type == "sqlite3" then
+  local kind = (copy.type or ""):lower()
+  if kind == "sqlite" or kind == "sqlite3" or kind == "duck" or kind == "duckdb" then
     copy.url = vim.fn.expand(copy.url)
   end
   return copy
@@ -353,13 +354,18 @@ function M.csv_escape(value)
 end
 
 function M.quote_identifier(connection_type, value)
-  local quote = connection_type == "mysql" and "`" or '"'
+  connection_type = (connection_type or ""):lower()
+  if connection_type == "sqlserver" or connection_type == "mssql" then
+    return "[" .. value:gsub("%]", "]]") .. "]"
+  end
+  local quote = (connection_type == "mysql" or connection_type == "mariadb" or connection_type == "clickhouse") and "`" or '"'
   local escaped = value:gsub(quote, quote .. quote)
   return quote .. escaped .. quote
 end
 
 function M.qualify_table(connection_type, schema, tbl)
-  if schema and schema ~= "" and connection_type ~= "sqlite" then
+  connection_type = (connection_type or ""):lower()
+  if schema and schema ~= "" and connection_type ~= "sqlite" and connection_type ~= "sqlite3" then
     return ("%s.%s"):format(M.quote_identifier(connection_type, schema), M.quote_identifier(connection_type, tbl))
   end
   return M.quote_identifier(connection_type, tbl)

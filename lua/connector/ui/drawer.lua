@@ -520,7 +520,7 @@ function DrawerUI:connection_prompt(initial, done)
   local values = vim.deepcopy(initial or {})
   local fields = {
     { key = "name", prompt = "Connection name: " },
-    { key = "type", prompt = "Connection type (sqlite/postgres/mysql): " },
+    { key = "type", prompt = "Connection type (sqlite/postgres/mysql/duckdb/clickhouse/sqlserver/redis/mongo/oracle): " },
     { key = "url", prompt = "Connection URL/path: " },
   }
 

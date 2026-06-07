@@ -57,7 +57,21 @@ end
 
 -- Built-ins: intentionally minimal; util already encodes mysql/sqlite schema/quote behavior.
 M.register("sqlite", {})
+M.register("sqlite3", {})
 M.register("postgres", {})
+M.register("postgresql", {})
+M.register("pg", {})
+M.register("redshift", {})
 M.register("mysql", {})
+M.register("mariadb", {})
+M.register("duck", {})
+M.register("duckdb", {})
+M.register("clickhouse", {})
+M.register("sqlserver", {})
+M.register("mssql", {})
+M.register("redis", {})
+M.register("mongo", {})
+M.register("mongodb", {})
+M.register("oracle", {})
 
 return M

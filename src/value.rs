@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use duckdb::types::{TimeUnit as DuckdbTimeUnit, Value as DuckdbValue, ValueRef as DuckdbValueRef};
 use rusqlite::types::Value as SqliteValue;
 use serde_json::{json, Value};
 
@@ -153,6 +154,28 @@ pub fn json_to_mysql_value(value: &Value) -> Result<mysql::Value> {
     })
 }
 
+pub fn json_to_duckdb_value(value: &Value) -> Result<DuckdbValue> {
+    Ok(match value {
+        Value::Null => DuckdbValue::Null,
+        Value::Bool(boolean) => DuckdbValue::Boolean(*boolean),
+        Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                DuckdbValue::BigInt(integer)
+            } else if let Some(unsigned) = number.as_u64() {
+                DuckdbValue::UBigInt(unsigned)
+            } else {
+                DuckdbValue::Double(
+                    number
+                        .as_f64()
+                        .ok_or_else(|| anyhow!("invalid numeric value"))?,
+                )
+            }
+        }
+        Value::String(text) => DuckdbValue::Text(text.clone()),
+        other => DuckdbValue::Text(serde_json::to_string(other)?),
+    })
+}
+
 pub fn normalized_key_values(keys: &[KeyFieldInput]) -> Result<Vec<(String, String, Value)>> {
     keys.iter()
         .map(|key| {
@@ -188,4 +211,70 @@ pub fn mysql_value_to_json(value: mysql::Value) -> Value {
             ))
         }
     }
+}
+
+pub fn duckdb_value_to_json(value: DuckdbValueRef<'_>) -> Value {
+    duckdb_owned_value_to_json(value.to_owned())
+}
+
+fn duckdb_owned_value_to_json(value: DuckdbValue) -> Value {
+    match value {
+        DuckdbValue::Null => Value::Null,
+        DuckdbValue::Boolean(value) => json!(value),
+        DuckdbValue::TinyInt(value) => json!(value),
+        DuckdbValue::SmallInt(value) => json!(value),
+        DuckdbValue::Int(value) => json!(value),
+        DuckdbValue::BigInt(value) => json!(value),
+        DuckdbValue::HugeInt(value) => json!(value.to_string()),
+        DuckdbValue::UTinyInt(value) => json!(value),
+        DuckdbValue::USmallInt(value) => json!(value),
+        DuckdbValue::UInt(value) => json!(value),
+        DuckdbValue::UBigInt(value) => json!(value),
+        DuckdbValue::Float(value) => json!(value),
+        DuckdbValue::Double(value) => json!(value),
+        DuckdbValue::Decimal(value) => json!(value.to_string()),
+        DuckdbValue::Timestamp(unit, value) => json!(format_duckdb_time_value(unit, value)),
+        DuckdbValue::Text(value) => json!(value),
+        DuckdbValue::Blob(value) => json!(format!("<blob:{}>", value.len())),
+        DuckdbValue::Date32(value) => json!(value),
+        DuckdbValue::Time64(unit, value) => json!(format_duckdb_time_value(unit, value)),
+        DuckdbValue::Interval {
+            months,
+            days,
+            nanos,
+        } => json!(format!("{months} months {days} days {nanos} ns")),
+        DuckdbValue::List(values) | DuckdbValue::Array(values) => {
+            Value::Array(values.into_iter().map(duckdb_owned_value_to_json).collect())
+        }
+        DuckdbValue::Enum(value) => json!(value),
+        DuckdbValue::Struct(values) => {
+            let object = values
+                .iter()
+                .map(|(key, value)| (key.clone(), duckdb_owned_value_to_json(value.clone())))
+                .collect();
+            Value::Object(object)
+        }
+        DuckdbValue::Map(values) => Value::Array(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    json!({
+                        "key": duckdb_owned_value_to_json(key.clone()),
+                        "value": duckdb_owned_value_to_json(value.clone()),
+                    })
+                })
+                .collect(),
+        ),
+        DuckdbValue::Union(value) => duckdb_owned_value_to_json(*value),
+    }
+}
+
+fn format_duckdb_time_value(unit: DuckdbTimeUnit, value: i64) -> String {
+    let suffix = match unit {
+        DuckdbTimeUnit::Second => "s",
+        DuckdbTimeUnit::Millisecond => "ms",
+        DuckdbTimeUnit::Microsecond => "us",
+        DuckdbTimeUnit::Nanosecond => "ns",
+    };
+    format!("{value}{suffix}")
 }

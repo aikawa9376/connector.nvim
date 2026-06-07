@@ -9,9 +9,9 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
 - query execution from editor, current line, or selection
 - result paging and CSV/JSON/table export
 - in-cell updates for simple `select * from table ...` result sets
-- structure browsing for SQLite, PostgreSQL, and MySQL
+- structure browsing for SQLite, PostgreSQL, MySQL, DuckDB, ClickHouse, SQL Server, Redis, MongoDB, and Oracle
 - connection CRUD for writable sources
-- database switching for PostgreSQL and MySQL
+- database switching for PostgreSQL, MySQL, ClickHouse, SQL Server, and MongoDB
 - secret expansion with `{{ env "VAR" }}` and `{{ exec "cmd" }}`
 
 ## Installation
@@ -146,7 +146,20 @@ A typical connection entry looks like this:
 }
 ```
 
-For PostgreSQL and MySQL use URL connection strings.
+Supported connection types:
+
+- `sqlite` / `sqlite3`
+- `postgres` / `postgresql` / `pg`
+- `redshift` (PostgreSQL-compatible driver)
+- `mysql` / `mariadb`
+- `duck` / `duckdb`
+- `clickhouse`
+- `sqlserver` / `mssql`
+- `redis`
+- `mongo` / `mongodb`
+- `oracle`
+
+For PostgreSQL, MySQL, ClickHouse, SQL Server, Redis, MongoDB, and Oracle use connection strings.
 
 Example environment variable:
 
@@ -159,6 +172,51 @@ export CONNECTOR_CONNECTIONS='[
   }
 ]'
 ```
+
+Additional URL examples:
+
+```json
+[
+  {
+    "name": "Local DuckDB",
+    "type": "duckdb",
+    "url": "~/data/app.duckdb"
+  },
+  {
+    "name": "Local ClickHouse",
+    "type": "clickhouse",
+    "url": "tcp://default@localhost:9000/default"
+  },
+  {
+    "name": "Local SQL Server",
+    "type": "sqlserver",
+    "url": "mssql://sa:password@localhost:1433/master?trust_cert=true"
+  },
+  {
+    "name": "Local Redis",
+    "type": "redis",
+    "url": "redis://127.0.0.1:6379/0"
+  },
+  {
+    "name": "Local MongoDB",
+    "type": "mongo",
+    "url": "mongodb://127.0.0.1:27017/app"
+  },
+  {
+    "name": "Local Oracle",
+    "type": "oracle",
+    "url": "oracle://app_user:password@localhost:1521/FREEPDB1"
+  }
+]
+```
+
+Notes:
+- ClickHouse uses the native TCP protocol (`tcp://...`). `clickhouse://...` is accepted and normalized to `tcp://...`.
+- SQL Server also accepts ADO.NET or JDBC-style connection strings supported by `tiberius`.
+- Redis commands use shell-like argument splitting, e.g. `GET key` or `HGETALL user:1`.
+- MongoDB commands are JSON objects passed to `runCommand`, e.g. `{"find":"users","limit":10}`.
+- Oracle uses the pure Rust `oracle-rs` driver and expects `oracle://user:password@host:port/service`.
+- BigQuery and Databricks from `nvim-dbee` are not implemented yet.
 
 ## Drawer workflow
 

@@ -65,12 +65,62 @@ fn shell_exec(command: &str) -> Result<String> {
 
 fn apply_database_override(raw_url: &str, kind: &str, database: &str) -> Result<String> {
     let driver = normalize_kind(kind)?;
-    if driver == DriverKind::Sqlite {
-        return Ok(raw_url.to_string());
+    match driver {
+        DriverKind::Sqlite | DriverKind::Duckdb | DriverKind::Oracle => {
+            return Ok(raw_url.to_string());
+        }
+        DriverKind::SqlServer => return apply_sqlserver_database_override(raw_url, database),
+        _ => {}
     }
 
     let mut parsed = Url::parse(raw_url)
         .with_context(|| format!("expected URL connection string: {raw_url}"))?;
     parsed.set_path(&format!("/{database}"));
     Ok(parsed.to_string())
+}
+
+fn apply_sqlserver_database_override(raw_url: &str, database: &str) -> Result<String> {
+    if raw_url
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("jdbc:sqlserver://")
+    {
+        return upsert_semicolon_property(raw_url, database, &["databasename"]);
+    }
+
+    if raw_url.contains(';') && raw_url.contains('=') {
+        return upsert_semicolon_property(raw_url, database, &["database", "initial catalog"]);
+    }
+
+    let mut parsed = Url::parse(raw_url)
+        .with_context(|| format!("expected SQL Server URL or ADO connection string: {raw_url}"))?;
+    parsed.set_path(&format!("/{database}"));
+    Ok(parsed.to_string())
+}
+
+fn upsert_semicolon_property(raw: &str, database: &str, keys: &[&str]) -> Result<String> {
+    let mut found = false;
+    let mut parts = Vec::new();
+
+    for part in raw.split(';').filter(|part| !part.is_empty()) {
+        let Some((key, _)) = part.split_once('=') else {
+            parts.push(part.to_string());
+            continue;
+        };
+        if keys
+            .iter()
+            .any(|candidate| key.trim().eq_ignore_ascii_case(candidate))
+        {
+            parts.push(format!("{}={database}", key.trim()));
+            found = true;
+        } else {
+            parts.push(part.to_string());
+        }
+    }
+
+    if !found {
+        parts.push(format!("{}={database}", keys[0]));
+    }
+
+    Ok(parts.join(";"))
 }
