@@ -9,7 +9,7 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
 - query execution from editor, current line, or selection
 - result paging and CSV/JSON/table export
 - in-cell updates for simple `select * from table ...` result sets
-- structure browsing for SQLite, PostgreSQL, MySQL, DuckDB, ClickHouse, SQL Server, Redis, MongoDB, and Oracle
+- structure browsing for SQLite, PostgreSQL, MySQL, and optional DuckDB, ClickHouse, SQL Server, Redis, MongoDB, and Oracle drivers
 - connection CRUD for writable sources
 - database switching for PostgreSQL, MySQL, ClickHouse, SQL Server, and MongoDB
 - secret expansion with `{{ env "VAR" }}` and `{{ exec "cmd" }}`
@@ -28,12 +28,20 @@ Neovim database client inspired by `nvim-dbee`, with a **Rust backend** and **Lu
   -- lazy = true,
 
   -- Option A (recommended): let lazy.nvim run cargo so the build log shows up in Lazy's UI.
+  -- The default backend includes SQLite, PostgreSQL, and MySQL.
   -- connector.nvim will pick up `target/release/connector-backend` automatically.
   build = "cargo build --release --manifest-path Cargo.toml",
 
+  -- Add optional drivers with Cargo features:
+  -- build = "cargo build --release --manifest-path Cargo.toml --features duckdb,redis",
+  -- build = "cargo build --release --manifest-path Cargo.toml --features all-drivers",
+
   -- Option B: install the backend binary into stdpath("data")/connector/bin
   -- build = function()
-  --   require("connector").install()
+  --   require("connector").install({
+  --     features = { "duckdb", "redis" },
+  --     -- all_features = true,
+  --   })
   -- end,
 
   config = function()
@@ -148,16 +156,20 @@ A typical connection entry looks like this:
 
 Supported connection types:
 
-- `sqlite` / `sqlite3`
-- `postgres` / `postgresql` / `pg`
-- `redshift` (PostgreSQL-compatible driver)
-- `mysql` / `mariadb`
-- `duck` / `duckdb`
-- `clickhouse`
-- `sqlserver` / `mssql`
-- `redis`
-- `mongo` / `mongodb`
-- `oracle`
+- default build: `sqlite` / `sqlite3`
+- default build: `postgres` / `postgresql` / `pg`
+- default build: `redshift` (PostgreSQL-compatible driver)
+- default build: `mysql` / `mariadb`
+- optional feature `duckdb`: `duck` / `duckdb`
+- optional feature `clickhouse`: `clickhouse`
+- optional feature `sqlserver`: `sqlserver` / `mssql`
+- optional feature `redis`: `redis`
+- optional feature `mongo`: `mongo` / `mongodb`
+- optional feature `oracle`: `oracle`
+
+If a connection type is not enabled in the compiled backend, connector returns an error explaining
+which Cargo feature to rebuild with. Use `--features all-drivers` or `require("connector").install({ all_features = true })`
+for the previous all-in-one build.
 
 For PostgreSQL, MySQL, ClickHouse, SQL Server, Redis, MongoDB, and Oracle use connection strings.
 
@@ -287,6 +299,18 @@ columns stay read-only, and you can type `NULL` to clear nullable cells.
 
 The backend lives in this repository and builds to `connector-backend`. `require("connector").install()`
 builds it with Cargo and copies the binary into Neovim's data directory.
+
+Default Cargo features build only the lighter common drivers: SQLite, PostgreSQL, and MySQL. Optional
+drivers can be added at install time:
+
+```lua
+require("connector").install({
+  features = { "duckdb", "clickhouse" },
+})
+```
+
+Available driver features: `duckdb`, `clickhouse`, `sqlserver`, `redis`, `mongo`, `oracle`, and
+`all-drivers`. Passing `all_features = true` is equivalent to enabling `all-drivers`.
 
 ## TODO
 - [ ] 対応DBの種類を増やす

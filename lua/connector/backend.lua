@@ -104,6 +104,73 @@ local function normalize_lines(data)
   return out
 end
 
+local function normalize_feature_name(feature)
+  if feature == "all" or feature == "all_drivers" then
+    return "all-drivers"
+  end
+  return feature
+end
+
+local function normalize_install_features(features)
+  local out, seen = {}, {}
+
+  local function add(feature)
+    if type(feature) ~= "string" or feature == "" then
+      error("connector install features must be non-empty strings")
+    end
+    feature = normalize_feature_name(feature)
+    if not seen[feature] then
+      seen[feature] = true
+      table.insert(out, feature)
+    end
+  end
+
+  if features == nil then
+    return out
+  end
+  if type(features) == "string" then
+    add(features)
+    return out
+  end
+  if type(features) ~= "table" then
+    error("connector install features must be a string or a table")
+  end
+
+  for _, feature in ipairs(features) do
+    add(feature)
+  end
+  for feature, enabled in pairs(features) do
+    if type(feature) ~= "number" and enabled then
+      add(feature)
+    end
+  end
+
+  return out
+end
+
+local function append_cargo_arg(cmd, value)
+  if type(value) ~= "string" or value == "" then
+    error("connector install cargo_args must contain non-empty strings")
+  end
+  table.insert(cmd, value)
+end
+
+local function append_cargo_args(cmd, args)
+  if args == nil then
+    return
+  end
+  if type(args) == "string" then
+    append_cargo_arg(cmd, args)
+    return
+  end
+  if type(args) ~= "table" then
+    error("connector install cargo_args must be a string or a table")
+  end
+  for _, value in ipairs(args) do
+    append_cargo_arg(cmd, value)
+  end
+end
+
 function M.install(config, opts)
   config = config or {}
   opts = opts or {}
@@ -125,6 +192,18 @@ function M.install(config, opts)
 
   local done, exit_code = false, nil
   local cmd = { cargo, "build", "--release", "--manifest-path", util.joinpath(root, "Cargo.toml") }
+  local features = normalize_install_features(opts.features)
+  if opts.all_features or opts.all_drivers then
+    table.insert(features, "all-drivers")
+  end
+  if opts.no_default_features or opts.no_default then
+    table.insert(cmd, "--no-default-features")
+  end
+  if #features > 0 then
+    table.insert(cmd, "--features")
+    table.insert(cmd, table.concat(features, ","))
+  end
+  append_cargo_args(cmd, opts.cargo_args)
 
   local function emit(lines, is_err)
     if #lines == 0 then

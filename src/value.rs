@@ -1,5 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
+#[cfg(feature = "duckdb")]
 use duckdb::types::{TimeUnit as DuckdbTimeUnit, Value as DuckdbValue, ValueRef as DuckdbValueRef};
+#[cfg(feature = "sqlite")]
 use rusqlite::types::Value as SqliteValue;
 use serde_json::{json, Value};
 
@@ -92,6 +94,7 @@ pub fn normalize_json_value(value: &Value, data_type: &str, nullable: bool) -> R
     Ok(value.clone())
 }
 
+#[cfg(feature = "sqlite")]
 pub fn json_to_sqlite_value(value: &Value) -> Result<SqliteValue> {
     Ok(match value {
         Value::Null => SqliteValue::Null,
@@ -112,6 +115,7 @@ pub fn json_to_sqlite_value(value: &Value) -> Result<SqliteValue> {
     })
 }
 
+#[cfg(feature = "postgres")]
 pub fn json_to_postgres_param(value: &Value) -> Result<Box<dyn postgres::types::ToSql + Sync>> {
     Ok(match value {
         Value::Null => Box::new(Option::<String>::None),
@@ -132,6 +136,7 @@ pub fn json_to_postgres_param(value: &Value) -> Result<Box<dyn postgres::types::
     })
 }
 
+#[cfg(feature = "mysql")]
 pub fn json_to_mysql_value(value: &Value) -> Result<mysql::Value> {
     Ok(match value {
         Value::Null => mysql::Value::NULL,
@@ -154,6 +159,7 @@ pub fn json_to_mysql_value(value: &Value) -> Result<mysql::Value> {
     })
 }
 
+#[cfg(feature = "duckdb")]
 pub fn json_to_duckdb_value(value: &Value) -> Result<DuckdbValue> {
     Ok(match value {
         Value::Null => DuckdbValue::Null,
@@ -188,6 +194,7 @@ pub fn normalized_key_values(keys: &[KeyFieldInput]) -> Result<Vec<(String, Stri
         .collect()
 }
 
+#[cfg(feature = "mysql")]
 pub fn mysql_value_to_json(value: mysql::Value) -> Value {
     match value {
         mysql::Value::NULL => Value::Null,
@@ -213,10 +220,12 @@ pub fn mysql_value_to_json(value: mysql::Value) -> Value {
     }
 }
 
+#[cfg(feature = "duckdb")]
 pub fn duckdb_value_to_json(value: DuckdbValueRef<'_>) -> Value {
     duckdb_owned_value_to_json(value.to_owned())
 }
 
+#[cfg(feature = "duckdb")]
 fn duckdb_owned_value_to_json(value: DuckdbValue) -> Value {
     match value {
         DuckdbValue::Null => Value::Null,
@@ -269,6 +278,7 @@ fn duckdb_owned_value_to_json(value: DuckdbValue) -> Value {
     }
 }
 
+#[cfg(feature = "duckdb")]
 fn format_duckdb_time_value(unit: DuckdbTimeUnit, value: i64) -> String {
     let suffix = match unit {
         DuckdbTimeUnit::Second => "s",

@@ -11,13 +11,13 @@ use crate::value::parse_text_value;
 pub fn execute(connection: ConnectionInput, query: String) -> Result<ExecuteResponse> {
     let url = effective_url(&connection)?;
     let kind = normalize_kind(&connection.kind)?;
-    kind.driver().execute(&url, &query)
+    kind.driver()?.execute(&url, &query)
 }
 
 pub fn structure(connection: ConnectionInput) -> Result<Vec<StructureItem>> {
     let url = effective_url(&connection)?;
     let kind = normalize_kind(&connection.kind)?;
-    kind.driver().structure(&url)
+    kind.driver()?.structure(&url)
 }
 
 pub fn columns(
@@ -28,13 +28,14 @@ pub fn columns(
 ) -> Result<Vec<ColumnInfo>> {
     let url = effective_url(&connection)?;
     let kind = normalize_kind(&connection.kind)?;
-    kind.driver().columns(&url, &table, schema, materialization)
+    kind.driver()?
+        .columns(&url, &table, schema, materialization)
 }
 
 pub fn list_databases(connection: ConnectionInput) -> Result<ListDatabasesResponse> {
     let url = effective_url(&connection)?;
     let kind = normalize_kind(&connection.kind)?;
-    kind.driver().list_databases(&url, &connection)
+    kind.driver()?.list_databases(&url, &connection)
 }
 
 pub fn update_row(
@@ -53,7 +54,7 @@ pub fn update_row(
     let kind = normalize_kind(&connection.kind)?;
     let value = parse_text_value(&new_value_text, &column.data_type, column.nullable)?;
     let affected_rows =
-        kind.driver()
+        kind.driver()?
             .update_row(&url, &table, schema.as_deref(), &column, &keys, &value)?;
 
     Ok(UpdateRowResponse {

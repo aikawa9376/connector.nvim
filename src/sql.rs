@@ -11,6 +11,7 @@ pub fn sqlite_path(url: &str) -> String {
     }
 }
 
+#[cfg(feature = "duckdb")]
 pub fn duckdb_path(url: &str) -> String {
     let trimmed = url.trim();
     if let Some(stripped) = trimmed.strip_prefix("duckdb://") {

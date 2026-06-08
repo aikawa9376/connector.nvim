@@ -6,14 +6,23 @@ use crate::protocol::{
     ListDatabasesResponse, StructureItem,
 };
 
+#[cfg(feature = "clickhouse")]
 pub mod clickhouse;
+#[cfg(feature = "duckdb")]
 pub mod duckdb;
+#[cfg(feature = "mongo")]
 pub mod mongo;
+#[cfg(feature = "mysql")]
 pub mod mysql;
+#[cfg(feature = "oracle")]
 pub mod oracle;
+#[cfg(feature = "postgres")]
 pub mod postgres;
+#[cfg(feature = "redis")]
 pub mod redis;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(feature = "sqlserver")]
 pub mod sqlserver;
 
 pub trait Driver {
@@ -70,28 +79,58 @@ pub fn normalize_kind(kind: &str) -> Result<DriverKind> {
     }
 }
 
+#[cfg(feature = "sqlite")]
 static SQLITE_DRIVER: sqlite::SqliteDriver = sqlite::SqliteDriver;
+#[cfg(feature = "postgres")]
 static POSTGRES_DRIVER: postgres::PostgresDriver = postgres::PostgresDriver;
+#[cfg(feature = "mysql")]
 static MYSQL_DRIVER: mysql::MysqlDriver = mysql::MysqlDriver;
+#[cfg(feature = "duckdb")]
 static DUCKDB_DRIVER: duckdb::DuckdbDriver = duckdb::DuckdbDriver;
+#[cfg(feature = "clickhouse")]
 static CLICKHOUSE_DRIVER: clickhouse::ClickhouseDriver = clickhouse::ClickhouseDriver;
+#[cfg(feature = "sqlserver")]
 static SQLSERVER_DRIVER: sqlserver::SqlServerDriver = sqlserver::SqlServerDriver;
+#[cfg(feature = "redis")]
 static REDIS_DRIVER: redis::RedisDriver = redis::RedisDriver;
+#[cfg(feature = "mongo")]
 static MONGO_DRIVER: mongo::MongoDriver = mongo::MongoDriver;
+#[cfg(feature = "oracle")]
 static ORACLE_DRIVER: oracle::OracleDriver = oracle::OracleDriver;
 
+macro_rules! configured_driver {
+    ($feature:literal, $driver:expr, $name:literal) => {{
+        #[cfg(feature = $feature)]
+        {
+            Ok($driver)
+        }
+        #[cfg(not(feature = $feature))]
+        {
+            bail!(
+                "driver `{}` is not enabled in this connector-backend build. Rebuild with `--features {}`",
+                $name,
+                $feature
+            )
+        }
+    }};
+}
+
 impl DriverKind {
-    pub fn driver(&self) -> &'static dyn Driver {
+    pub fn driver(&self) -> Result<&'static dyn Driver> {
         match self {
-            DriverKind::Sqlite => &SQLITE_DRIVER,
-            DriverKind::Postgres => &POSTGRES_DRIVER,
-            DriverKind::Mysql => &MYSQL_DRIVER,
-            DriverKind::Duckdb => &DUCKDB_DRIVER,
-            DriverKind::Clickhouse => &CLICKHOUSE_DRIVER,
-            DriverKind::SqlServer => &SQLSERVER_DRIVER,
-            DriverKind::Redis => &REDIS_DRIVER,
-            DriverKind::Mongo => &MONGO_DRIVER,
-            DriverKind::Oracle => &ORACLE_DRIVER,
+            DriverKind::Sqlite => configured_driver!("sqlite", &SQLITE_DRIVER, "sqlite"),
+            DriverKind::Postgres => configured_driver!("postgres", &POSTGRES_DRIVER, "postgres"),
+            DriverKind::Mysql => configured_driver!("mysql", &MYSQL_DRIVER, "mysql"),
+            DriverKind::Duckdb => configured_driver!("duckdb", &DUCKDB_DRIVER, "duckdb"),
+            DriverKind::Clickhouse => {
+                configured_driver!("clickhouse", &CLICKHOUSE_DRIVER, "clickhouse")
+            }
+            DriverKind::SqlServer => {
+                configured_driver!("sqlserver", &SQLSERVER_DRIVER, "sqlserver")
+            }
+            DriverKind::Redis => configured_driver!("redis", &REDIS_DRIVER, "redis"),
+            DriverKind::Mongo => configured_driver!("mongo", &MONGO_DRIVER, "mongo"),
+            DriverKind::Oracle => configured_driver!("oracle", &ORACLE_DRIVER, "oracle"),
         }
     }
 }

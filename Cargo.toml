@@ -9,23 +9,46 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bson = { version = "3.1.0", features = ["serde_json-1"] }
-chrono = "0.4"
-chrono-tz = "0.8"
+bson = { version = "3.1.0", features = ["serde_json-1"], optional = true }
+chrono = { version = "0.4", optional = true }
+chrono-tz = { version = "0.8", optional = true }
 clap = { version = "4.5", features = ["derive"] }
-clickhouse-rs = "1.1.0-alpha.1"
-duckdb = { version = "1.10503.1", features = ["bundled"] }
-mongodb = { version = "3.7.0", default-features = false, features = ["sync", "rustls-tls", "dns-resolver", "compat-3-0-0", "bson-3"] }
-mysql = "26.0"
-oracle-rs = "0.1.7"
-postgres = "0.19"
-redis = "1.2.2"
+clickhouse-rs = { version = "1.1.0-alpha.1", optional = true }
+duckdb = { version = "1.10503.1", features = ["bundled"], optional = true }
+mongodb = { version = "3.7.0", default-features = false, features = ["sync", "rustls-tls", "dns-resolver", "compat-3-0-0", "bson-3"], optional = true }
+mysql = { version = "26.0", optional = true }
+oracle-rs = { version = "0.1.7", optional = true }
+postgres = { version = "0.19", optional = true }
+redis = { version = "1.2.2", optional = true }
 regex = "1.11"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tiberius = { version = "0.12.3", default-features = false, features = ["rustls", "sql-browser-tokio", "tds73", "tokio"] }
-tokio = { version = "1.52", features = ["net", "rt-multi-thread", "time"] }
-tokio-util = { version = "0.7", features = ["compat"] }
+tiberius = { version = "0.12.3", default-features = false, features = ["rustls", "sql-browser-tokio", "tds73", "tokio"], optional = true }
+tokio = { version = "1.52", features = ["net", "rt-multi-thread", "time"], optional = true }
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
 url = "2.5"
-uuid = "1.23"
+uuid = { version = "1.23", optional = true }
+
+[features]
+default = ["sqlite", "postgres", "mysql"]
+all-drivers = [
+  "sqlite",
+  "postgres",
+  "mysql",
+  "duckdb",
+  "clickhouse",
+  "sqlserver",
+  "redis",
+  "mongo",
+  "oracle",
+]
+sqlite = ["dep:rusqlite"]
+postgres = ["dep:postgres"]
+mysql = ["dep:mysql"]
+duckdb = ["dep:duckdb"]
+clickhouse = ["dep:chrono", "dep:chrono-tz", "dep:clickhouse-rs", "dep:tokio", "dep:uuid"]
+sqlserver = ["dep:tiberius", "dep:tokio", "dep:tokio-util"]
+redis = ["dep:redis"]
+mongo = ["dep:bson", "dep:mongodb"]
+oracle = ["dep:oracle-rs", "dep:tokio"]
