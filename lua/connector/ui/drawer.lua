@@ -82,6 +82,9 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
   handler:register_event_listener("current_connection_changed", function()
     o:refresh()
   end)
+  handler:register_event_listener("connection_metadata_changed", function()
+    o:schedule_refresh()
+  end)
   handler:register_event_listener("query_context_changed", function(payload)
     if payload and payload.table then
       o:reveal_table(payload)
@@ -448,6 +451,101 @@ function DrawerUI:cached_structure_count(connection_id, database)
   return type(items) == "table" and #items or nil
 end
 
+function DrawerUI:structure_count_state(connection_id, database)
+  local child_count = self:cached_structure_count(connection_id, database)
+  if child_count ~= nil then
+    return child_count
+  end
+
+  local state = self:structure_state(connection_id, database)
+  if state.status == "ready" then
+    return #state.items
+  end
+  return nil
+end
+
+function DrawerUI:structure_state(connection_id, database, opts)
+  opts = opts or {}
+  database = database or ""
+  local items, err = self.handler:connection_get_structure_cached(connection_id, database, opts)
+  if items then
+    return { status = "ready", items = items }
+  end
+  if err then
+    return { status = "error", error = err }
+  end
+
+  local cache_key
+  if opts.all then
+    cache_key = connection_id .. ":__all__"
+  elseif database ~= "" then
+    cache_key = connection_id .. ":" .. database
+  else
+    cache_key = connection_id
+  end
+  if self.handler.pending_structure_requests and self.handler.pending_structure_requests[cache_key] then
+    return { status = "loading" }
+  end
+
+  local ok, request_err = pcall(self.handler.connection_get_structure_async, self.handler, connection_id, database, opts)
+  if not ok then
+    return { status = "error", error = request_err }
+  end
+  return { status = "loading" }
+end
+
+function DrawerUI:database_state(conn)
+  local current, databases, err = self.handler:connection_list_databases_cached(conn.id)
+  if databases then
+    return { status = "ready", current = current, databases = databases }
+  end
+  if err then
+    return { status = "error", error = err }
+  end
+  if self.handler.pending_database_requests and self.handler.pending_database_requests[conn.id] then
+    return { status = "loading" }
+  end
+
+  local ok, request_err = pcall(self.handler.connection_list_databases_async, self.handler, conn.id)
+  if not ok then
+    return { status = "error", error = request_err }
+  end
+  return { status = "loading" }
+end
+
+function DrawerUI:column_state(connection_id, opts)
+  opts = opts or {}
+  local columns, err = self.handler:connection_get_columns_cached(connection_id, opts)
+  if columns then
+    return { status = "ready", columns = columns }
+  end
+  if err then
+    return { status = "error", error = err }
+  end
+
+  local cache_key = table.concat({
+    connection_id or "",
+    opts.schema or "",
+    opts.table or "",
+    opts.materialization or "",
+  }, "\0")
+  if self.handler.pending_column_requests and self.handler.pending_column_requests[cache_key] then
+    return { status = "loading" }
+  end
+
+  local ok, request_err = pcall(self.handler.connection_get_columns_async, self.handler, connection_id, opts)
+  if not ok then
+    return { status = "error", error = request_err }
+  end
+  return { status = "loading" }
+end
+
+function DrawerUI:add_loading_line(lines, depth, label, opts)
+  self:add_line(lines, depth, label or "loading...", {
+    kind = "loading",
+  }, opts)
+end
+
 function DrawerUI:add_history_call_line(lines, depth, call)
   table.insert(lines, call_history.build_call_line(call, {
     indent = string.rep("  ", depth),
@@ -562,13 +660,13 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
     }, { expandable = true })
 
     if self:is_expanded(table_key) then
-      local ok_cols, columns = pcall(self.handler.connection_get_columns, self.handler, conn.id, {
+      local column_state = self:column_state(conn.id, {
         table = item.name,
         schema = schema ~= "" and schema or nil,
         materialization = item.materialization,
       })
-      if ok_cols then
-        for _, col in ipairs(columns) do
+      if column_state.status == "ready" then
+        for _, col in ipairs(column_state.columns) do
           local col_label = col.name
           if col.primary_key then
             col_label = col_label .. " [PK]"
@@ -585,8 +683,13 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
             column = col.name,
           })
         end
+      elseif column_state.status == "loading" then
+        self:add_loading_line(lines, depth + 1, "loading columns...")
       else
-        util.notify(("Failed to load columns for %s: %s"):format(item.name, columns), vim.log.levels.ERROR)
+        self:add_line(lines, depth + 1, "connection error: " .. err_to_string(column_state.error), {
+          kind = "connection_error",
+          connection_id = conn.id,
+        })
       end
     end
   end
@@ -602,7 +705,7 @@ end
 
 function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ignored)
   local db_key = ("database:%s:%s"):format(conn.id, database)
-  local child_count = self:cached_structure_count(conn.id, database)
+  local child_count = self:structure_count_state(conn.id, database)
   self:add_line(lines, depth, database, {
     kind = "database",
     key = db_key,
@@ -611,11 +714,13 @@ function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ig
     ignored = ignored == true,
   }, { expandable = true, active = database == current_db, ignored = ignored == true, child_count = child_count })
   if self:is_expanded(db_key) then
-    local ok_structure, items = pcall(self.handler.connection_get_structure, self.handler, conn.id, database)
-    if ok_structure and type(items) == "table" then
-      self:render_structure_items(lines, depth + 1, conn, items)
+    local state = self:structure_state(conn.id, database)
+    if state.status == "ready" then
+      self:render_structure_items(lines, depth + 1, conn, state.items)
+    elseif state.status == "loading" then
+      self:add_loading_line(lines, depth + 1, "loading structure...", { ignored = ignored == true })
     else
-      self:add_line(lines, depth + 1, "connection error: " .. err_to_string(items), {
+      self:add_line(lines, depth + 1, "connection error: " .. err_to_string(state.error), {
         kind = "connection_error",
         connection_id = conn.id,
       }, { ignored = ignored == true })
@@ -745,7 +850,7 @@ function DrawerUI:insert_query(text)
     note_details = note[1]
   end
 
-  local bufnr = note_details.bufnr
+  local bufnr = self.editor:ensure_note_buf(note_details)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
@@ -912,9 +1017,9 @@ function DrawerUI:refresh()
       if self.expanded[conn_key] == nil then
         self.expanded[conn_key] = true
       end
-      local ok_db, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, active_conn.id)
-      if ok_db and current_db and current_db ~= "" then
-        local db_key = ("database:%s:%s"):format(active_conn.id, current_db)
+      local db_state = self:database_state(active_conn)
+      if db_state.status == "ready" and db_state.current and db_state.current ~= "" then
+        local db_key = ("database:%s:%s"):format(active_conn.id, db_state.current)
         if self.expanded[db_key] == nil then
           self.expanded[db_key] = true
         end
@@ -924,13 +1029,16 @@ function DrawerUI:refresh()
     local ignored_by_connection = {}
     local database_meta = {}
     local project_for_meta = self:current_project()
-    local function get_database_meta(conn)
+    local function get_database_meta(conn, opts)
+      opts = opts or {}
       if database_meta[conn.id] then
         return database_meta[conn.id]
       end
 
       local meta = {
         ok = false,
+        loading = false,
+        err = nil,
         current = nil,
         databases = {},
         visible = {},
@@ -940,7 +1048,7 @@ function DrawerUI:refresh()
 
       -- Connection-level ignore takes precedence
       local project = self:current_project()
-      if util.is_project_connection_ignored(project, conn.id) then
+      if not opts.include_connection_ignored and util.is_project_connection_ignored(project, conn.id) then
         meta.connection_ignored = true
         database_meta[conn.id] = meta
         ignored_by_connection[conn.id] = {
@@ -952,13 +1060,19 @@ function DrawerUI:refresh()
         return meta
       end
 
-      local ok_dbs, current_db, databases = pcall(self.handler.connection_list_databases, self.handler, conn.id)
-      meta.ok = ok_dbs
-      meta.current = current_db
-      meta.databases = databases or {}
+      local db_state = self:database_state(conn)
+      if db_state.status == "ready" then
+        meta.ok = true
+        meta.current = db_state.current
+        meta.databases = db_state.databases or {}
+      elseif db_state.status == "loading" then
+        meta.loading = true
+      else
+        meta.err = db_state.error
+      end
 
-      if ok_dbs and #(databases or {}) > 0 then
-        for _, database in ipairs(databases or {}) do
+      if meta.ok and #meta.databases > 0 then
+        for _, database in ipairs(meta.databases) do
           if self:is_database_ignored(conn.id, database) then
             table.insert(meta.ignored, database)
           else
@@ -967,11 +1081,11 @@ function DrawerUI:refresh()
         end
       end
 
-      local ignored = #meta.ignored > 0 and meta.ignored or util.project_ignored_databases(self:current_project(), conn.id)
+      local ignored = #meta.ignored > 0 and meta.ignored or util.project_ignored_databases(project, conn.id)
       if #ignored > 0 then
         ignored_by_connection[conn.id] = {
           conn = conn,
-          current_db = current_db,
+          current_db = meta.current,
           databases = ignored,
         }
       end
@@ -999,7 +1113,7 @@ function DrawerUI:refresh()
         local source_active = active_conn and active_conn.source_id == source:name()
         local visible_connections = 0
         for _, conn in ipairs(source_connections) do
-          if not get_database_meta(conn).connection_ignored then
+          if not util.is_project_connection_ignored(project_for_meta, conn.id) then
             visible_connections = visible_connections + 1
           end
         end
@@ -1035,12 +1149,21 @@ function DrawerUI:refresh()
                   for _, database in ipairs(db_meta.visible) do
                     self:add_database_line(lines, 3, conn, database, db_meta.current, false)
                   end
+                elseif db_meta.loading then
+                  self:add_loading_line(lines, 3, "loading databases...")
+                elseif db_meta.err then
+                  self:add_line(lines, 3, "connection error: " .. err_to_string(db_meta.err), {
+                    kind = "connection_error",
+                    connection_id = conn.id,
+                  })
                 else
-                  local ok_structure, structure = pcall(self.handler.connection_get_structure, self.handler, conn.id)
-                  if ok_structure and type(structure) == "table" then
-                    self:render_structure_items(lines, 3, conn, structure)
+                  local structure_state = self:structure_state(conn.id)
+                  if structure_state.status == "ready" then
+                    self:render_structure_items(lines, 3, conn, structure_state.items)
+                  elseif structure_state.status == "loading" then
+                    self:add_loading_line(lines, 3, "loading structure...")
                   else
-                    self:add_line(lines, 3, "connection error: " .. err_to_string(structure), {
+                    self:add_line(lines, 3, "connection error: " .. err_to_string(structure_state.error), {
                       kind = "connection_error",
                       connection_id = conn.id,
                     })
@@ -1090,39 +1213,37 @@ function DrawerUI:refresh()
           if self:is_expanded(conn_key) then
             -- If connection-level ignore is set, show its databases under the ignore group
             if entry.connection_ignored then
-              -- Try database listing first
-              local ok_db, current_db_or_err, databases = pcall(self.handler.connection_list_databases, self.handler, entry.conn.id)
-              if ok_db and databases and #databases > 0 then
-                for _, database in ipairs(databases) do
-                  self:add_database_line(lines, 3, entry.conn, database, current_db_or_err, true)
+              local db_state = self:database_state(entry.conn)
+              if db_state.status == "ready" and db_state.databases and #db_state.databases > 0 then
+                for _, database in ipairs(db_state.databases) do
+                  self:add_database_line(lines, 3, entry.conn, database, db_state.current, true)
                 end
+              elseif db_state.status == "loading" then
+                self:add_loading_line(lines, 3, "loading databases...", { ignored = true })
+              elseif db_state.status == "error" then
+                self:add_line(lines, 3, "connection error: " .. err_to_string(db_state.error), {
+                  kind = "connection_error",
+                  connection_id = entry.conn.id,
+                }, { ignored = true })
               else
                 -- If no databases returned, try rendering structure (tables) like the main connection view
-                local ok_structure, structure_or_err = pcall(self.handler.connection_get_structure, self.handler, entry.conn.id)
-                if ok_structure and type(structure_or_err) == "table" and #structure_or_err > 0 then
-                  self:render_structure_items(lines, 3, entry.conn, structure_or_err)
+                local structure_state = self:structure_state(entry.conn.id)
+                if structure_state.status == "ready" and #structure_state.items > 0 then
+                  self:render_structure_items(lines, 3, entry.conn, structure_state.items)
+                elseif structure_state.status == "loading" then
+                  self:add_loading_line(lines, 3, "loading structure...", { ignored = true })
+                elseif structure_state.status == "error" then
+                  self:add_line(lines, 3, "connection error: " .. err_to_string(structure_state.error), {
+                    kind = "connection_error",
+                    connection_id = entry.conn.id,
+                  }, { ignored = true })
                 else
-                  local err = nil
-                  if not ok_db then
-                    err = current_db_or_err
-                  end
-                  if not ok_structure then
-                    err = structure_or_err
-                  end
-
-                  if err then
-                    self:add_line(lines, 3, "connection error: " .. err_to_string(err), {
-                      kind = "connection_error",
-                      connection_id = entry.conn.id,
-                    }, { ignored = true })
-                  else
-                    -- Nothing to show (by design) for an ignored connection when it has no DB list / structure
-                    self:add_line(lines, 3, "(entire connection ignored)", {
-                      kind = "ignored_connection_marker",
-                      key = "ignored_marker:" .. conn_id,
-                      connection_id = entry.conn.id,
-                    }, { ignored = true })
-                  end
+                  -- Nothing to show (by design) for an ignored connection when it has no DB list / structure
+                  self:add_line(lines, 3, "(entire connection ignored)", {
+                    kind = "ignored_connection_marker",
+                    key = "ignored_marker:" .. conn_id,
+                    connection_id = entry.conn.id,
+                  }, { ignored = true })
                 end
               end
             else

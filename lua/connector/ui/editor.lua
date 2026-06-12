@@ -104,7 +104,9 @@ end
 
 function EditorUI:index_note(note)
   self.notes_by_id[note.id] = note
-  self.notes_by_buf[note.bufnr] = note.id
+  if note.bufnr then
+    self.notes_by_buf[note.bufnr] = note.id
+  end
   self.notes_by_file[note.file] = note.id
 end
 
@@ -139,7 +141,7 @@ function EditorUI:update_note_file(note, new_file)
   note.file = new_file
   self.notes_by_file[new_file] = note.id
 
-  if vim.api.nvim_buf_is_valid(note.bufnr) then
+  if note.bufnr and vim.api.nvim_buf_is_valid(note.bufnr) then
     pcall(vim.api.nvim_buf_set_name, note.bufnr, new_file)
   end
 end
@@ -218,6 +220,20 @@ function EditorUI:create_buf(file)
   return bufnr
 end
 
+function EditorUI:ensure_note_buf(note)
+  if not note then
+    return nil
+  end
+  if note.bufnr and vim.api.nvim_buf_is_valid(note.bufnr) then
+    return note.bufnr
+  end
+
+  local bufnr = self:create_buf(note.file)
+  note.bufnr = bufnr
+  self.notes_by_buf[bufnr] = note.id
+  return bufnr
+end
+
 function EditorUI:load_notes()
   local paths = vim.fn.globpath(self.config.directory, "**/*.sql", false, true)
   table.sort(paths)
@@ -231,7 +247,6 @@ function EditorUI:load_notes()
       id = id,
       name = name,
       file = file,
-      bufnr = self:create_buf(file),
       namespace = namespace,
     })
   end
@@ -462,12 +477,13 @@ end
 
 function EditorUI:set_current_note(id)
   local note = assert(self:search_note(id), "note not found: " .. id)
+  local bufnr = self:ensure_note_buf(note)
   self.current_note_id = id
   if self.state_helpers and self.state_helpers.set_current_project then
-    self.state_helpers.set_current_project(util.resolve_project(note.file), note.bufnr)
+    self.state_helpers.set_current_project(util.resolve_project(note.file), bufnr)
   end
   if self.window and vim.api.nvim_win_is_valid(self.window) then
-    vim.api.nvim_win_set_buf(self.window, note.bufnr)
+    vim.api.nvim_win_set_buf(self.window, bufnr)
   end
   self:emit("current_note_changed", note)
   self:update_winbar()
@@ -508,7 +524,8 @@ function EditorUI:show(winid)
   self.window = winid
   self:ensure_default_note()
   local note = assert(self:search_note(self.current_note_id))
-  vim.api.nvim_win_set_buf(winid, note.bufnr)
+  local bufnr = self:ensure_note_buf(note)
+  vim.api.nvim_win_set_buf(winid, bufnr)
   self:update_winbar()
 end
 
@@ -683,7 +700,7 @@ end
 function EditorUI:do_action(action)
   self:ensure_default_note()
   local note = assert(self:search_note(self.current_note_id))
-  local bufnr = note.bufnr
+  local bufnr = assert(self:ensure_note_buf(note), "failed to load scratchpad buffer")
 
   if action == "jump_to_table" then
     self:jump_to_table_under_cursor()

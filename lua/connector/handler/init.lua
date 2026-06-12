@@ -52,7 +52,14 @@ function Handler:new(config)
     call_order = {},
     running_calls = {},
     structure_cache = {},
+    structure_errors = {},
+    pending_structure_requests = {},
     database_cache = {},
+    database_errors = {},
+    pending_database_requests = {},
+    column_cache = {},
+    column_errors = {},
+    pending_column_requests = {},
     table_index = {},
     table_index_all_loaded = {},
     listeners = {},
@@ -169,7 +176,14 @@ function Handler:source_reload(id)
   end
 
   self.structure_cache = {}
+  self.structure_errors = {}
+  self.pending_structure_requests = {}
   self.database_cache = {}
+  self.database_errors = {}
+  self.pending_database_requests = {}
+  self.column_cache = {}
+  self.column_errors = {}
+  self.pending_column_requests = {}
   self.table_index = {}
   self.table_index_all_loaded = {}
   self:emit("connections_changed", { source_id = id })
@@ -953,7 +967,55 @@ function Handler:clear_structure_cache(id)
       self.structure_cache[key] = nil
     end
   end
+  for key in pairs(self.structure_errors) do
+    if key == id or vim.startswith(key, id .. ":") then
+      self.structure_errors[key] = nil
+    end
+  end
+  for key in pairs(self.pending_structure_requests) do
+    if key == id or vim.startswith(key, id .. ":") then
+      self.pending_structure_requests[key] = nil
+    end
+  end
+  for key in pairs(self.column_cache) do
+    if vim.startswith(key, id .. "\0") then
+      self.column_cache[key] = nil
+    end
+  end
+  for key in pairs(self.column_errors) do
+    if vim.startswith(key, id .. "\0") then
+      self.column_errors[key] = nil
+    end
+  end
+  for key in pairs(self.pending_column_requests) do
+    if vim.startswith(key, id .. "\0") then
+      self.pending_column_requests[key] = nil
+    end
+  end
   self:clear_table_index(id)
+end
+
+local function structure_cache_key(id, database, opts)
+  opts = opts or {}
+  database = database or ""
+  if opts.all then
+    return id .. ":__all__"
+  elseif database ~= "" then
+    return id .. ":" .. database
+  end
+  return id
+end
+
+local function structure_request_connection(conn, database, opts)
+  opts = opts or {}
+  database = database or ""
+  local request_conn = vim.deepcopy(conn)
+  if opts.all then
+    request_conn.database = nil
+  elseif database ~= "" then
+    request_conn.database = database
+  end
+  return request_conn
 end
 
 function Handler:connection_get_structure(id, database, opts)
@@ -965,29 +1027,17 @@ function Handler:connection_get_structure(id, database, opts)
   database = database or ""
 
   local conn = assert(self.connections[id], "connection not found: " .. id)
-  local cache_key
-  if opts.all then
-    cache_key = id .. ":__all__"
-  elseif database ~= "" then
-    cache_key = id .. ":" .. database
-  else
-    cache_key = id
-  end
+  local cache_key = structure_cache_key(id, database, opts)
 
   if self.structure_cache[cache_key] then
     return vim.deepcopy(self.structure_cache[cache_key])
   end
 
-  local request_conn = vim.deepcopy(conn)
-  if opts.all then
-    request_conn.database = nil
-  elseif database ~= "" then
-    request_conn.database = database
-  end
   local result = backend.request_sync(self.config, "structure", {
-    connection = util.expand_connection(request_conn),
+    connection = util.expand_connection(structure_request_connection(conn, database, opts)),
   }) or {}
   self.structure_cache[cache_key] = result
+  self.structure_errors[cache_key] = nil
   self:index_structure_items(id, result)
   if opts.all then
     self.table_index_all_loaded[id] = true
@@ -995,14 +1045,195 @@ function Handler:connection_get_structure(id, database, opts)
   return vim.deepcopy(result)
 end
 
-function Handler:connection_get_columns(id, opts)
+function Handler:connection_get_structure_cached(id, database, opts)
+  if type(database) == "function" then
+    database = ""
+    opts = {}
+  end
+  if type(database) == "table" then
+    opts = database
+    database = ""
+  end
+  local cache_key = structure_cache_key(id, database, opts)
+  local items = self.structure_cache[cache_key]
+  if items then
+    return vim.deepcopy(items)
+  end
+  return nil, self.structure_errors[cache_key]
+end
+
+function Handler:connection_get_structure_async(id, database, opts, done)
+  if type(database) == "function" then
+    done = database
+    opts = {}
+    database = ""
+  elseif type(database) == "table" then
+    done = opts
+    opts = database
+    database = ""
+  elseif type(opts) == "function" then
+    done = opts
+    opts = {}
+  end
+  opts = opts or {}
+  database = database or ""
+  done = done or function() end
+
   local conn = assert(self.connections[id], "connection not found: " .. id)
-  return backend.request_sync(self.config, "columns", {
+  local cache_key = structure_cache_key(id, database, opts)
+  if self.structure_cache[cache_key] then
+    local cached = vim.deepcopy(self.structure_cache[cache_key])
+    vim.schedule(function()
+      done(nil, cached)
+    end)
+    return
+  end
+
+  local pending = self.pending_structure_requests[cache_key]
+  if pending then
+    table.insert(pending.callbacks, done)
+    return pending.handle
+  end
+
+  self.structure_errors[cache_key] = nil
+  pending = { callbacks = { done } }
+  self.pending_structure_requests[cache_key] = pending
+  local ok_request, handle_or_err = pcall(backend.request_async, self.config, "structure", {
+    connection = util.expand_connection(structure_request_connection(conn, database, opts)),
+  }, function(err, result)
+    local request = self.pending_structure_requests[cache_key]
+    if request == pending then
+      self.pending_structure_requests[cache_key] = nil
+    else
+      return
+    end
+
+    if not self.connections[id] then
+      return
+    end
+
+    if err then
+      self.structure_errors[cache_key] = err
+    else
+      result = result or {}
+      self.structure_cache[cache_key] = result
+      self.structure_errors[cache_key] = nil
+      self:index_structure_items(id, result)
+      if opts.all then
+        self.table_index_all_loaded[id] = true
+      end
+    end
+
+    self:emit("connection_metadata_changed", { connection_id = id, kind = "structure", database = database })
+    for _, callback in ipairs(pending.callbacks or {}) do
+      callback(err, err and nil or vim.deepcopy(result or {}))
+    end
+  end)
+  if not ok_request then
+    self.pending_structure_requests[cache_key] = nil
+    self.structure_errors[cache_key] = handle_or_err
+    error(handle_or_err)
+  end
+  pending.handle = handle_or_err
+  return pending.handle
+end
+
+local function column_cache_key(id, opts)
+  opts = opts or {}
+  return table.concat({
+    id or "",
+    opts.schema or "",
+    opts.table or "",
+    opts.materialization or "",
+  }, "\0")
+end
+
+function Handler:connection_get_columns(id, opts)
+  opts = opts or {}
+  local conn = assert(self.connections[id], "connection not found: " .. id)
+  local cache_key = column_cache_key(id, opts)
+  if self.column_cache[cache_key] then
+    return vim.deepcopy(self.column_cache[cache_key])
+  end
+  local result = backend.request_sync(self.config, "columns", {
     connection = util.expand_connection(conn),
     table = opts.table,
     schema = opts.schema,
     materialization = opts.materialization,
   }) or {}
+  self.column_cache[cache_key] = result
+  self.column_errors[cache_key] = nil
+  return vim.deepcopy(result)
+end
+
+function Handler:connection_get_columns_cached(id, opts)
+  local cache_key = column_cache_key(id, opts)
+  local columns = self.column_cache[cache_key]
+  if columns then
+    return vim.deepcopy(columns)
+  end
+  return nil, self.column_errors[cache_key]
+end
+
+function Handler:connection_get_columns_async(id, opts, done)
+  opts = opts or {}
+  done = done or function() end
+  local conn = assert(self.connections[id], "connection not found: " .. id)
+  local cache_key = column_cache_key(id, opts)
+  if self.column_cache[cache_key] then
+    local cached = vim.deepcopy(self.column_cache[cache_key])
+    vim.schedule(function()
+      done(nil, cached)
+    end)
+    return
+  end
+
+  local pending = self.pending_column_requests[cache_key]
+  if pending then
+    table.insert(pending.callbacks, done)
+    return pending.handle
+  end
+
+  self.column_errors[cache_key] = nil
+  pending = { callbacks = { done } }
+  self.pending_column_requests[cache_key] = pending
+  local ok_request, handle_or_err = pcall(backend.request_async, self.config, "columns", {
+    connection = util.expand_connection(conn),
+    table = opts.table,
+    schema = opts.schema,
+    materialization = opts.materialization,
+  }, function(err, result)
+    local request = self.pending_column_requests[cache_key]
+    if request == pending then
+      self.pending_column_requests[cache_key] = nil
+    else
+      return
+    end
+
+    if not self.connections[id] then
+      return
+    end
+
+    if err then
+      self.column_errors[cache_key] = err
+    else
+      result = result or {}
+      self.column_cache[cache_key] = result
+      self.column_errors[cache_key] = nil
+    end
+
+    self:emit("connection_metadata_changed", { connection_id = id, kind = "columns", table = opts.table, schema = opts.schema })
+    for _, callback in ipairs(pending.callbacks or {}) do
+      callback(err, err and nil or vim.deepcopy(result or {}))
+    end
+  end)
+  if not ok_request then
+    self.pending_column_requests[cache_key] = nil
+    self.column_errors[cache_key] = handle_or_err
+    error(handle_or_err)
+  end
+  pending.handle = handle_or_err
+  return pending.handle
 end
 
 function Handler:connection_list_databases(id)
@@ -1013,7 +1244,72 @@ function Handler:connection_list_databases(id)
   local conn = assert(self.connections[id], "connection not found: " .. id)
   local result = backend.request_sync(self.config, "list-databases", { connection = util.expand_connection(conn) }) or {}
   self.database_cache[id] = result
+  self.database_errors[id] = nil
   return result.current or "", vim.deepcopy(result.available or {})
+end
+
+function Handler:connection_list_databases_cached(id)
+  local cached = self.database_cache[id]
+  if cached then
+    return cached.current or "", vim.deepcopy(cached.available or {}), nil
+  end
+  return nil, nil, self.database_errors[id]
+end
+
+function Handler:connection_list_databases_async(id, done)
+  done = done or function() end
+  if self.database_cache[id] then
+    local cached = self.database_cache[id]
+    vim.schedule(function()
+      done(nil, cached.current or "", vim.deepcopy(cached.available or {}))
+    end)
+    return
+  end
+
+  local pending = self.pending_database_requests[id]
+  if pending then
+    table.insert(pending.callbacks, done)
+    return pending.handle
+  end
+
+  local conn = assert(self.connections[id], "connection not found: " .. id)
+  self.database_errors[id] = nil
+  pending = { callbacks = { done } }
+  self.pending_database_requests[id] = pending
+  local ok_request, handle_or_err = pcall(backend.request_async, self.config, "list-databases", {
+    connection = util.expand_connection(conn),
+  }, function(err, result)
+    local request = self.pending_database_requests[id]
+    if request == pending then
+      self.pending_database_requests[id] = nil
+    else
+      return
+    end
+
+    if not self.connections[id] then
+      return
+    end
+
+    if err then
+      self.database_errors[id] = err
+    else
+      result = result or {}
+      self.database_cache[id] = result
+      self.database_errors[id] = nil
+    end
+
+    self:emit("connection_metadata_changed", { connection_id = id, kind = "databases" })
+    for _, callback in ipairs(pending.callbacks or {}) do
+      callback(err, result and (result.current or "") or "", result and vim.deepcopy(result.available or {}) or {})
+    end
+  end)
+  if not ok_request then
+    self.pending_database_requests[id] = nil
+    self.database_errors[id] = handle_or_err
+    error(handle_or_err)
+  end
+  pending.handle = handle_or_err
+  return pending.handle
 end
 
 function Handler:connection_select_database(id, database)
@@ -1021,6 +1317,8 @@ function Handler:connection_select_database(id, database)
   conn.database = database
   self:clear_structure_cache(id)
   self.database_cache[id] = nil
+  self.database_errors[id] = nil
+  self.pending_database_requests[id] = nil
   self:emit("connections_changed", { source_id = conn.source_id })
 end
 

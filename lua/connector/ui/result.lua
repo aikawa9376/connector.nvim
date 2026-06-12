@@ -84,12 +84,12 @@ function ResultUI:append_query_to_scratchpad(query)
     pcall(self.editor_ui.namespace_create_note, self.editor_ui, "global", "scratchpad")
     note = self.editor_ui:get_current_note()
   end
-  if not note or not note.bufnr or not vim.api.nvim_buf_is_valid(note.bufnr) then
+  local bufnr = note and self.editor_ui:ensure_note_buf(note) or nil
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     util.notify("Failed to open scratchpad.", vim.log.levels.ERROR)
     return
   end
 
-  local bufnr = note.bufnr
   util.buf_append_text(bufnr, query, { leading_blank_line = true })
 
   if self.editor_ui.window and vim.api.nvim_win_is_valid(self.editor_ui.window) then

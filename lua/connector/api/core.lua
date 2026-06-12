@@ -58,8 +58,24 @@ function core.connection_get_structure(id)
   return state.handler():connection_get_structure(id)
 end
 
+function core.connection_get_structure_cached(id, database, opts)
+  return state.handler():connection_get_structure_cached(id, database, opts)
+end
+
+function core.connection_get_structure_async(id, database, opts, done)
+  return state.handler():connection_get_structure_async(id, database, opts, done)
+end
+
 function core.connection_get_columns(id, opts)
   return state.handler():connection_get_columns(id, opts)
+end
+
+function core.connection_get_columns_cached(id, opts)
+  return state.handler():connection_get_columns_cached(id, opts)
+end
+
+function core.connection_get_columns_async(id, opts, done)
+  return state.handler():connection_get_columns_async(id, opts, done)
 end
 
 function core.connection_get_params(id)
@@ -72,6 +88,14 @@ end
 
 function core.connection_list_databases(id)
   return state.handler():connection_list_databases(id)
+end
+
+function core.connection_list_databases_cached(id)
+  return state.handler():connection_list_databases_cached(id)
+end
+
+function core.connection_list_databases_async(id, done)
+  return state.handler():connection_list_databases_async(id, done)
 end
 
 function core.connection_select_database(id, database)
