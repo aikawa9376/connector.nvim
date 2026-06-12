@@ -249,8 +249,8 @@ Notes:
 
 - `BB` or `<CR>` in visual mode runs the selection; when the selection contains multiple SQL statements, connector opens a dedicated result tab with one split per statement (`q` closes it)
 - `BB` in normal mode runs the whole scratchpad
-- `<CR>` runs the current line under the cursor
-- `<C-Space>` runs the current selection or line in a floating window
+- `<CR>` runs the SQL statement under the cursor
+- `<C-Space>` runs the current selection or SQL statement under the cursor in a floating window
 - `gd` jump-to-table: locate the definition/source table for the item under cursor (focuses the drawer)
 
 ## Result workflow

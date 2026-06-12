@@ -535,6 +535,42 @@ local function get_visual_lines(editor, bufnr)
   return vim.api.nvim_buf_get_lines(bufnr, start_row - 1, end_row, false)
 end
 
+local function query_under_cursor(bufnr)
+  local query, start_row, end_row = util.query_under_cursor(bufnr)
+  if not query or query:match("^%s*$") then
+    return nil
+  end
+  return query, start_row, end_row
+end
+
+local function flash_query_range(bufnr, start_row, end_row)
+  if not start_row or not end_row then
+    return
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  if line_count == 0 then
+    return
+  end
+
+  start_row = math.max(0, math.min(start_row, line_count - 1))
+  end_row = math.max(start_row, math.min(end_row, line_count - 1))
+
+  local ns_id = vim.api.nvim_create_namespace("connector_query_highlight")
+  vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+  vim.api.nvim_buf_set_extmark(bufnr, ns_id, start_row, 0, {
+    end_row = math.min(end_row + 1, line_count),
+    end_col = 0,
+    hl_group = "DiffText",
+    priority = 100,
+  })
+  vim.defer_fn(function()
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+    end
+  end, 750)
+end
+
 function EditorUI:run_query(query)
   local connection = self.handler:get_current_connection()
   if not connection then
@@ -667,21 +703,30 @@ function EditorUI:do_action(action)
     end
     self:run_queries(statements)
   elseif action == "run_under_cursor" then
-    local line = vim.api.nvim_get_current_line()
-    self:run_query(line)
+    local query, start_row, end_row = query_under_cursor(bufnr)
+    if not query then
+      util.notify("No query under cursor", vim.log.levels.INFO)
+      return
+    end
+    flash_query_range(bufnr, start_row, end_row)
+    self:run_query(query)
   elseif action == "run_in_float" then
     local lines = get_visual_lines(self, bufnr)
     local query = nil
+    local start_row, end_row
     if lines then
       query = table.concat(lines, "\n")
     else
-      -- `<C-Space>`: run current selection OR current line (not the whole file).
-      query = vim.api.nvim_get_current_line()
+      -- `<C-Space>`: run current selection OR current statement (not the whole file).
+      query, start_row, end_row = query_under_cursor(bufnr)
     end
 
     if not query or query:match("^%s*$") then
       util.notify("No query selected", vim.log.levels.INFO)
       return
+    end
+    if start_row and end_row then
+      flash_query_range(bufnr, start_row, end_row)
     end
 
     local conn = self.handler:get_current_connection()

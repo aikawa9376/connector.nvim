@@ -560,6 +560,17 @@ function M.query_has_side_effects(query)
         else
           pos = pos + 1
         end
+      elseif state == "bracket_quote" then
+        if ch == "]" then
+          if next_ch == "]" then
+            pos = pos + 2
+          else
+            state = "normal"
+            pos = pos + 1
+          end
+        else
+          pos = pos + 1
+        end
       elseif state == "dollar_quote" then
         if dollar_tag and statement:sub(pos, pos + #dollar_tag - 1) == dollar_tag then
           state = "normal"
@@ -586,6 +597,9 @@ function M.query_has_side_effects(query)
           pos = pos + 1
         elseif ch == "`" then
           state = "backtick_quote"
+          pos = pos + 1
+        elseif ch == "[" then
+          state = "bracket_quote"
           pos = pos + 1
         else
           local tag = match_dollar_quote_tag(statement, pos)
@@ -651,17 +665,54 @@ match_dollar_quote_tag = function(text, pos)
   return rest:match("^%$[%a_][%w_]*%$") or rest:match("^%$%$")
 end
 
-function M.split_sql_statements(text)
+local function push_sql_statement_span(statements, text, start_pos, end_pos)
+  if end_pos < start_pos then
+    return
+  end
+
+  local chunk = text:sub(start_pos, end_pos)
+  local leading = chunk:match("^%s*") or ""
+  local trailing = chunk:match("%s*$") or ""
+  local statement_start = start_pos + #leading
+  local statement_end = end_pos - #trailing
+  if statement_start > statement_end then
+    return
+  end
+
+  table.insert(statements, {
+    text = text:sub(statement_start, statement_end),
+    start_pos = statement_start,
+    end_pos = statement_end,
+    raw_start_pos = start_pos,
+    raw_end_pos = end_pos,
+  })
+end
+
+local function collect_sql_statement_spans(text, opts)
   if not text or text == "" then
     return {}
   end
 
+  opts = opts or {}
   local statements = {}
   local start_pos = 1
   local pos = 1
   local len = #text
   local state = "normal"
   local dollar_tag = nil
+  local line_blank = true
+
+  local function consume(count)
+    for _ = 1, count do
+      local consumed = text:sub(pos, pos)
+      if consumed == "\n" then
+        line_blank = true
+      elseif consumed ~= " " and consumed ~= "\t" and consumed ~= "\r" then
+        line_blank = false
+      end
+      pos = pos + 1
+    end
+  end
 
   while pos <= len do
     local ch = text:sub(pos, pos)
@@ -672,95 +723,180 @@ function M.split_sql_statements(text)
       if ch == "\n" then
         state = "normal"
       end
-      pos = pos + 1
+      consume(1)
     elseif state == "block_comment" then
       if ch == "*" and next_ch == "/" then
         state = "normal"
-        pos = pos + 2
+        consume(2)
       else
-        pos = pos + 1
+        consume(1)
       end
     elseif state == "single_quote" then
       if ch == "'" then
         if next_ch == "'" then
-          pos = pos + 2
+          consume(2)
         elseif prev_ch == "\\" then
-          pos = pos + 1
+          consume(1)
         else
           state = "normal"
-          pos = pos + 1
+          consume(1)
         end
       else
-        pos = pos + 1
+        consume(1)
       end
     elseif state == "double_quote" then
       if ch == '"' then
         if next_ch == '"' then
-          pos = pos + 2
+          consume(2)
         else
           state = "normal"
-          pos = pos + 1
+          consume(1)
         end
       else
-        pos = pos + 1
+        consume(1)
       end
     elseif state == "backtick_quote" then
       if ch == "`" then
         if next_ch == "`" then
-          pos = pos + 2
+          consume(2)
         else
           state = "normal"
-          pos = pos + 1
+          consume(1)
         end
       else
-        pos = pos + 1
+        consume(1)
+      end
+    elseif state == "bracket_quote" then
+      if ch == "]" then
+        if next_ch == "]" then
+          consume(2)
+        else
+          state = "normal"
+          consume(1)
+        end
+      else
+        consume(1)
       end
     elseif state == "dollar_quote" then
       if dollar_tag and text:sub(pos, pos + #dollar_tag - 1) == dollar_tag then
         state = "normal"
-        pos = pos + #dollar_tag
+        consume(#dollar_tag)
         dollar_tag = nil
       else
-        pos = pos + 1
+        consume(1)
       end
     else
       if ch == "-" and next_ch == "-" then
         state = "line_comment"
-        pos = pos + 2
+        consume(2)
       elseif ch == "#" then
         state = "line_comment"
-        pos = pos + 1
+        consume(1)
       elseif ch == "/" and next_ch == "*" then
         state = "block_comment"
-        pos = pos + 2
+        consume(2)
       elseif ch == "'" then
         state = "single_quote"
-        pos = pos + 1
+        consume(1)
       elseif ch == '"' then
         state = "double_quote"
-        pos = pos + 1
+        consume(1)
       elseif ch == "`" then
         state = "backtick_quote"
-        pos = pos + 1
+        consume(1)
+      elseif ch == "[" then
+        state = "bracket_quote"
+        consume(1)
       else
         local tag = match_dollar_quote_tag(text, pos)
         if tag then
           state = "dollar_quote"
           dollar_tag = tag
-          pos = pos + #tag
-        elseif ch == ";" then
-          push_sql_statement(statements, text:sub(start_pos, pos - 1))
+          consume(#tag)
+        elseif opts.blank_lines_are_separators and ch == "\n" and line_blank then
+          push_sql_statement_span(statements, text, start_pos, pos - 1)
           start_pos = pos + 1
-          pos = pos + 1
+          consume(1)
+        elseif ch == ";" then
+          push_sql_statement_span(statements, text, start_pos, pos - 1)
+          start_pos = pos + 1
+          consume(1)
         else
-          pos = pos + 1
+          consume(1)
         end
       end
     end
   end
 
-  push_sql_statement(statements, text:sub(start_pos))
+  push_sql_statement_span(statements, text, start_pos, len)
   return statements
+end
+
+function M.split_sql_statements(text)
+  local statements = {}
+  for _, span in ipairs(collect_sql_statement_spans(text)) do
+    push_sql_statement(statements, span.text)
+  end
+  return statements
+end
+
+local function cursor_offset(lines, cursor)
+  local row = math.max(1, math.min(cursor[1] or 1, math.max(#lines, 1)))
+  local line = lines[row] or ""
+  local col = math.max(0, math.min(cursor[2] or 0, #line))
+  local offset = 1
+  for index = 1, row - 1 do
+    offset = offset + #(lines[index] or "") + 1
+  end
+  return offset + col
+end
+
+local function row_for_offset(lines, offset)
+  local pos = 1
+  for row, line in ipairs(lines) do
+    local line_end = pos + #line - 1
+    if offset <= line_end then
+      return row - 1
+    end
+    local newline_pos = line_end + 1
+    if offset == newline_pos then
+      return row - 1
+    end
+    pos = newline_pos + 1
+  end
+  return math.max(#lines - 1, 0)
+end
+
+local function query_under_cursor_with_scanner(bufnr, cursor)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if #lines == 0 then
+    lines = { "" }
+  end
+
+  local text = table.concat(lines, "\n")
+  local offset = cursor_offset(lines, cursor)
+  local cursor_row = (cursor[1] or 1) - 1
+  local spans = collect_sql_statement_spans(text, { blank_lines_are_separators = true })
+  for _, span in ipairs(spans) do
+    local start_row = row_for_offset(lines, span.start_pos)
+    local end_row = row_for_offset(lines, span.end_pos)
+    local on_leading_indent = cursor_row == start_row
+      and offset >= span.raw_start_pos
+      and offset <= span.start_pos
+
+    if (offset >= span.start_pos and offset <= span.end_pos + 1) or on_leading_indent then
+      return span.text, start_row, end_row
+    end
+  end
+
+  return nil
+end
+
+function M.query_under_cursor(bufnr, cursor)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  cursor = cursor or vim.api.nvim_win_get_cursor(0)
+
+  return query_under_cursor_with_scanner(bufnr, cursor)
 end
 
 function M.parse_query_table_references(query)
