@@ -832,9 +832,9 @@ local function collect_sql_statement_spans(text, opts)
   return statements
 end
 
-function M.split_sql_statements(text)
+function M.split_sql_statements(text, opts)
   local statements = {}
-  for _, span in ipairs(collect_sql_statement_spans(text)) do
+  for _, span in ipairs(collect_sql_statement_spans(text, opts)) do
     push_sql_statement(statements, span.text)
   end
   return statements
@@ -1026,19 +1026,38 @@ function M.sorted_copy(items, sorter)
   return copy
 end
 
+local function normalize_buffer_lines(lines)
+  if type(lines) == "string" then
+    lines = vim.split(lines, "\n", { plain = true })
+  elseif type(lines) ~= "table" then
+    lines = { lines == nil and "" or tostring(lines) }
+  end
+
+  local normalized = {}
+  for _, line in ipairs(lines) do
+    local text = line == nil and "" or tostring(line)
+    local parts = vim.split(text, "\n", { plain = true })
+    for _, part in ipairs(parts) do
+      table.insert(normalized, (part:gsub("\r$", "")))
+    end
+  end
+
+  if #normalized == 0 then
+    return { "" }
+  end
+  return normalized
+end
+
 function M.buf_set_lines(bufnr, lines)
   local was_modifiable = vim.bo[bufnr].modifiable
   vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, normalize_buffer_lines(lines))
   vim.bo[bufnr].modifiable = was_modifiable
 end
 
 function M.buf_append_text(bufnr, text, opts)
   opts = opts or {}
-  local lines = vim.split(text or "", "\n", { plain = true })
-  if #lines == 0 then
-    lines = { "" }
-  end
+  local lines = normalize_buffer_lines(text)
 
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)

@@ -402,7 +402,7 @@ function EditorUI:current_note_query_count(note)
     return 0
   end
   local text = table.concat(vim.api.nvim_buf_get_lines(note.bufnr, 0, -1, false), "\n")
-  return #util.split_sql_statements(text)
+  return #util.split_sql_statements(text, { blank_lines_are_separators = true })
 end
 
 function EditorUI:current_target_parts()
@@ -714,7 +714,7 @@ function EditorUI:do_action(action)
     if not lines then
       return
     end
-    local statements = util.split_sql_statements(table.concat(lines, "\n"))
+    local statements = util.split_sql_statements(table.concat(lines, "\n"), { blank_lines_are_separators = true })
     if #statements == 0 then
       return
     end
