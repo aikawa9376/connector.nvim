@@ -4,6 +4,7 @@ local config = require("connector.config")
 
 local connector = {
   api = {
+    context = api.context,
     core = api.core,
     ui = api.ui,
   },
