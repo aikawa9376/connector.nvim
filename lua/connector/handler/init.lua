@@ -495,30 +495,7 @@ function Handler:attach_editable_result(conn, query, result)
 end
 
 function Handler:connection_execute(id, query, done)
-  local resolved_id, entries = self:prepare_query_context(id, query)
-  if resolved_id == false then
-    if done then
-      done(nil)
-    end
-    return nil
-  end
-  if entries then
-    self:pick_table_context(id, entries, { notify = true }, function(chosen_id)
-      if not chosen_id then
-        if done then
-          done(nil)
-        end
-        return
-      end
-      local call = self:begin_connection_execute(chosen_id, query)
-      if done then
-        done(call)
-      end
-    end)
-    return nil
-  end
-
-  local call = self:begin_connection_execute(resolved_id or id, query)
+  local call = self:begin_connection_execute(id, query)
   if done then
     done(call)
   end

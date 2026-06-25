@@ -316,3 +316,6 @@ Available driver features: `duckdb`, `clickhouse`, `sqlserver`, `redis`, `mongo`
 - [ ] 対応DBの種類を増やす
 - [ ] いい感じにトンネルでダンプできる機能をrustで挟んで実現したい
 - [ ] mdでいい感じにリレーション図を表示する
+
+- [ ] gdが機能してなさそう
+- [ ] 勝手にDBセレクトはクエリが失敗したときだけためすようにする

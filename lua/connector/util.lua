@@ -378,7 +378,8 @@ function M.render_helper(template, vars)
 end
 
 function M.strip_identifier_quotes(value)
-  return (value:gsub('^"', ""):gsub('"$', ""):gsub("^`", ""):gsub("`$", ""))
+  value = vim.trim(value or "")
+  return (value:gsub('^"', ""):gsub('"$', ""):gsub("^`", ""):gsub("`$", ""):gsub("^%[", ""):gsub("%]$", ""))
 end
 
 function M.parse_editable_select(query)
@@ -462,6 +463,53 @@ local SQL_KEYWORDS = {
   delete = true,
   dual = true,
 }
+
+local TABLE_REF_PREFIXES = {
+  "[Ff][Rr][Oo][Mm]",
+  "[Jj][Oo][Ii][Nn]",
+  "[Ii][Nn][Tt][Oo]",
+  "[Uu][Pp][Dd][Aa][Tt][Ee]",
+}
+
+local function trim_identifier_token(value)
+  value = vim.trim(value or "")
+  value = value:gsub("^[%(,;]+", ""):gsub("[,;%)]*$", "")
+  return vim.trim(value)
+end
+
+local function parse_table_identifier_token(raw_target)
+  local target = trim_identifier_token(raw_target)
+  if target == "" or target:find("%(") then
+    return nil
+  end
+
+  local parts = {}
+  for part in target:gmatch("[^%.]+") do
+    local identifier = M.strip_identifier_quotes(trim_identifier_token(part))
+    if identifier ~= "" then
+      table.insert(parts, identifier)
+    end
+  end
+
+  if #parts == 0 then
+    return nil
+  end
+
+  local tbl = parts[#parts]
+  if SQL_KEYWORDS[tbl:lower()] then
+    return nil
+  end
+
+  if #parts == 1 then
+    return { schema = nil, table = tbl }
+  end
+
+  return { schema = parts[#parts - 1], table = tbl }
+end
+
+function M.parse_table_identifier_token(raw_target)
+  return parse_table_identifier_token(raw_target)
+end
 
 local MUTATING_SQL_KEYWORDS = {
   insert = true,
@@ -885,7 +933,7 @@ local function query_under_cursor_with_scanner(bufnr, cursor)
       and offset <= span.start_pos
 
     if (offset >= span.start_pos and offset <= span.end_pos + 1) or on_leading_indent then
-      return span.text, start_row, end_row
+      return span.text, start_row, end_row, span, offset
     end
   end
 
@@ -899,7 +947,25 @@ function M.query_under_cursor(bufnr, cursor)
   return query_under_cursor_with_scanner(bufnr, cursor)
 end
 
-function M.parse_query_table_references(query)
+function M.query_span_under_cursor(bufnr, cursor)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  cursor = cursor or vim.api.nvim_win_get_cursor(0)
+
+  local text, start_row, end_row, span, offset = query_under_cursor_with_scanner(bufnr, cursor)
+  if not span then
+    return nil
+  end
+
+  local result = vim.deepcopy(span)
+  result.text = text
+  result.start_row = start_row
+  result.end_row = end_row
+  result.cursor_offset = offset
+  result.cursor_relative_offset = math.max(1, offset - span.start_pos + 1)
+  return result
+end
+
+function M.parse_query_table_reference_matches(query)
   if not query or query == "" then
     return {}
   end
@@ -907,87 +973,80 @@ function M.parse_query_table_references(query)
   local matches = {}
   local seen = {}
 
-  local function add(pos, schema, tbl)
-    schema = schema ~= "" and schema or nil
+  local function add(target_start, target_end, schema, tbl)
+    if not schema and query:sub(target_end + 1, target_end + 1) == "." then
+      return
+    end
+
+    local parsed
+    if schema then
+      parsed = {
+        schema = M.strip_identifier_quotes(schema),
+        table = M.strip_identifier_quotes(tbl),
+      }
+    else
+      parsed = parse_table_identifier_token(tbl)
+    end
+
+    if not parsed or not parsed.table or parsed.table == "" then
+      return
+    end
+
+    schema = parsed.schema and parsed.schema ~= "" and parsed.schema or nil
+    tbl = parsed.table
     local key = M.table_index_key(schema, tbl)
     if seen[key] then
       return
     end
     seen[key] = true
     table.insert(matches, {
-      pos = pos,
+      pos = target_start,
+      start_pos = target_start,
+      end_pos = target_end,
       schema = schema,
       table = tbl,
     })
   end
 
-  local function add_unqualified(pos, tbl)
-    if SQL_KEYWORDS[tbl:lower()] or tbl:find("%.") then
-      return
-    end
-    add(pos, nil, tbl)
-  end
-
   local function scan(pattern, callback)
     local init = 1
     while true do
-      local start_pos, end_pos, a, b = query:find(pattern, init)
+      local start_pos, end_pos, a, b, c, d = query:find(pattern, init)
       if not start_pos then
         break
       end
-      callback(start_pos, a, b)
+      callback(start_pos, end_pos, a, b, c, d)
       init = end_pos + 1
     end
   end
 
-  scan("`([^`]+)`%.`([^`]+)`", function(pos, schema, tbl)
-    add(pos, schema, tbl)
+  scan("()`([^`]+)`%.`([^`]+)`()", function(_pos, _end_pos, target_start, schema, tbl, target_after)
+    add(target_start, target_after - 1, schema, tbl)
   end)
-  scan('"([^"]+)"%."([^"]+)"', function(pos, schema, tbl)
-    add(pos, schema, tbl)
+  scan('()"([^"]+)"%."([^"]+)"()', function(_pos, _end_pos, target_start, schema, tbl, target_after)
+    add(target_start, target_after - 1, schema, tbl)
   end)
-  scan("[Ff][Rr][Oo][Mm]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
-    add(pos, schema, tbl)
+  scan("()%[([^%]]+)%]%.%[([^%]]+)%]()", function(_pos, _end_pos, target_start, schema, tbl, target_after)
+    add(target_start, target_after - 1, schema, tbl)
   end)
-  scan("[Jj][Oo][Ii][Nn]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
-    add(pos, schema, tbl)
-  end)
-  scan("[Ii][Nn][Tt][Oo]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
-    add(pos, schema, tbl)
-  end)
-  scan("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_]+)%.([%w_]+)", function(pos, schema, tbl)
-    add(pos, schema, tbl)
-  end)
-  scan("[Ff][Rr][Oo][Mm]%s+`([^`]+)`", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan('[Ff][Rr][Oo][Mm]%s+"([^"]+)"', function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Ff][Rr][Oo][Mm]%s+([%w_%.]+)", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Jj][Oo][Ii][Nn]%s+`([^`]+)`", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan('[Jj][Oo][Ii][Nn]%s+"([^"]+)"', function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Jj][Oo][Ii][Nn]%s+([%w_%.]+)", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Ii][Nn][Tt][Oo]%s+`([^`]+)`", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Ii][Nn][Tt][Oo]%s+([%w_%.]+)", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Uu][Pp][Dd][Aa][Tt][Ee]%s+`([^`]+)`", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
-  scan("[Uu][Pp][Dd][Aa][Tt][Ee]%s+([%w_%.]+)", function(pos, tbl)
-    add_unqualified(pos, tbl)
-  end)
+
+  for _, prefix in ipairs(TABLE_REF_PREFIXES) do
+    scan(prefix .. "%s+()([%w_]+)%.([%w_]+)()", function(_pos, _end_pos, target_start, schema, tbl, target_after)
+      add(target_start, target_after - 1, schema, tbl)
+    end)
+    scan(prefix .. "%s+()`([^`]+)`()", function(_pos, _end_pos, target_start, tbl, target_after)
+      add(target_start, target_after - 1, nil, tbl)
+    end)
+    scan(prefix .. '%s+()"([^"]+)"()', function(_pos, _end_pos, target_start, tbl, target_after)
+      add(target_start, target_after - 1, nil, tbl)
+    end)
+    scan(prefix .. "%s+()%[([^%]]+)%]()", function(_pos, _end_pos, target_start, tbl, target_after)
+      add(target_start, target_after - 1, nil, tbl)
+    end)
+    scan(prefix .. "%s+()([%w_%.]+)()", function(_pos, _end_pos, target_start, tbl, target_after)
+      add(target_start, target_after - 1, nil, tbl)
+    end)
+  end
 
   table.sort(matches, function(left, right)
     if left.pos == right.pos then
@@ -996,14 +1055,29 @@ function M.parse_query_table_references(query)
     return left.pos < right.pos
   end)
 
+  return matches
+end
+
+function M.parse_query_table_references(query)
   local refs = {}
-  for _, match in ipairs(matches) do
-    table.insert(refs, {
-      schema = match.schema,
-      table = match.table,
-    })
+  for _, match in ipairs(M.parse_query_table_reference_matches(query)) do
+    table.insert(refs, { schema = match.schema, table = match.table })
   end
   return refs
+end
+
+function M.table_reference_at_offset(query, offset)
+  if not query or query == "" or not offset then
+    return nil
+  end
+
+  for _, match in ipairs(M.parse_query_table_reference_matches(query)) do
+    if offset >= match.start_pos and offset <= match.end_pos + 1 then
+      return { schema = match.schema, table = match.table }
+    end
+  end
+
+  return nil
 end
 
 function M.apply_buffer_mappings(bufnr, mappings, callback)

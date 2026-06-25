@@ -624,27 +624,28 @@ function EditorUI:jump_to_table_under_cursor()
   local api_ui = require("connector.api.ui")
 
   local schema, tbl
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local span = util.query_span_under_cursor(bufnr, cursor)
+  if span then
+    local ref = util.table_reference_at_offset(span.text, span.cursor_relative_offset)
+    if ref then
+      schema = ref.schema
+      tbl = ref.table
+    end
+  end
+
   local token = vim.fn.expand("<cWORD>") or ""
   token = token:gsub("^%s+", ""):gsub("%s+$", "")
 
-  if token ~= "" then
-    if token:find("%.") then
-      local parts = {}
-      for part in token:gmatch("[^%.]+") do
-        table.insert(parts, util.strip_identifier_quotes(part))
-      end
-      if #parts >= 2 then
-        schema = parts[#parts-1]
-        tbl = parts[#parts]
-      else
-        tbl = parts[#parts]
-      end
-    else
-      tbl = util.strip_identifier_quotes(token)
+  if (not tbl or tbl == "") and token ~= "" then
+    local ref = util.parse_table_identifier_token(token)
+    if ref then
+      schema = ref.schema
+      tbl = ref.table
     end
-  else
-    local line = vim.api.nvim_get_current_line()
-    local refs = util.parse_query_table_references(line)
+  elseif (not tbl or tbl == "") and span then
+    local refs = util.parse_query_table_references(span.text)
     if #refs >= 1 then
       schema = refs[1].schema
       tbl = refs[1].table
