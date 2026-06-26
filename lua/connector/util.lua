@@ -469,6 +469,7 @@ local TABLE_REF_PREFIXES = {
   "[Jj][Oo][Ii][Nn]",
   "[Ii][Nn][Tt][Oo]",
   "[Uu][Pp][Dd][Aa][Tt][Ee]",
+  "[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]%s+[Tt][Aa][Bb][Ll][Ee]",
 }
 
 local function trim_identifier_token(value)

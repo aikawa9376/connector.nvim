@@ -47,7 +47,7 @@ end
 ---@class connector.sql.GenerateTableQueryOpts
 ---@field connection table|nil
 ---@field connection_id string|nil
----@field action 'select'|'update'|'delete'|'insert'|'ddl'
+---@field action 'select'|'update'|'delete'|'insert'|'ddl'|'truncate'
 ---@field schema string|nil
 ---@field table string
 ---@field materialization string|nil
@@ -84,6 +84,13 @@ function M.generate_table_query(opts)
     local fallback = (cols and cols[1]) or (opts.all_columns and opts.all_columns[1])
     local wc = where_clause(dialect, pk_names, fallback)
     return ("DELETE FROM %s WHERE %s;"):format(qualified, wc)
+  end
+
+  if action == "truncate" then
+    if kind == "sqlite" or kind == "sqlite3" then
+      return ("DELETE FROM %s;"):format(qualified)
+    end
+    return ("TRUNCATE TABLE %s;"):format(qualified)
   end
 
   if action == "update" then

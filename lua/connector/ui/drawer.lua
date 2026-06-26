@@ -37,7 +37,7 @@ local function err_to_string(err)
 end
 
 local DrawerUI = {}
-local GENERATE_ACTIONS = { "Select", "Update", "Delete", "Insert", "DDL" }
+local GENERATE_ACTIONS = { "Select", "Update", "Delete", "Truncate", "Insert", "DDL" }
 
 function DrawerUI:new(handler, editor, result, config, state_helpers)
   local bufnr = vim.api.nvim_create_buf(false, true)
@@ -745,6 +745,45 @@ function DrawerUI:execute_query(connection_id, query)
   end
 end
 
+function DrawerUI:truncate_table_action(node)
+  local conn = nil
+  pcall(function()
+    conn = self.handler:connection_get_params(node.connection_id)
+  end)
+
+  local query = sqlgen.generate_table_query({
+    connection = conn,
+    connection_id = node.connection_id,
+    action = "truncate",
+    schema = node.schema,
+    table = node.table,
+    materialization = node.materialization,
+  })
+  if query == "" then
+    util.notify("Failed to build truncate query.", vim.log.levels.ERROR)
+    return
+  end
+
+  local conn_name = (conn and (conn.name or conn.id)) or node.connection_id
+  local target = node.schema and node.schema ~= "" and (node.schema .. "." .. node.table) or node.table
+  local lines = {
+    "This will remove all rows from the table.",
+    "",
+    ("Connection: %s"):format(conn_name),
+    ("Table: %s"):format(target),
+    "",
+    query,
+    "",
+    "Run this query?",
+  }
+
+  if vim.fn.confirm(table.concat(lines, "\n"), "&Run\n&Cancel", 2) ~= 1 then
+    return
+  end
+
+  self:execute_query(node.connection_id, query)
+end
+
 function DrawerUI:query_action_items(node)
   local helpers = self.handler:connection_get_helpers(node.connection_id, {
     table = node.table,
@@ -786,6 +825,11 @@ function DrawerUI:open_query_action_menu(node, opts)
     end
 
     local action = choice:lower()
+    if action == "truncate" then
+      self:truncate_table_action(node)
+      return
+    end
+
     if action == "select" or action == "update" or action == "delete" or action == "insert" or action == "ddl" then
       self:generate_query_for_table(node, action, visual_cols)
     end
