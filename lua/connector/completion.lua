@@ -1,7 +1,21 @@
 local state = require("connector.api.state")
+local dialect_mod = require("connector.sql.dialect")
 local util = require("connector.util")
 
 local M = {}
+
+local DEFAULT_QUERY_TEMPLATE_ACTIONS = {
+  "select",
+  "insert",
+  "update",
+  "delete",
+  "truncate",
+  "ddl",
+}
+
+local QUERY_TEMPLATE_ACTION_ALIASES = {
+  ddl = { "alter" },
+}
 
 local ALIAS_STOP_WORDS = {
   as = true,
@@ -193,6 +207,79 @@ local function markdown_bullets(lines)
   }
 end
 
+local function dialect_for_connection(connection)
+  return dialect_mod.for_kind(connection and connection.type or nil)
+end
+
+local function qualified_table(connection, entry)
+  return dialect_for_connection(connection):qualify_table(entry.schema, entry.table)
+end
+
+local function snippet_literal(text)
+  local escaped = tostring(text or ""):gsub("\\", "\\\\"):gsub("%$", "\\$"):gsub("}", "\\}")
+  return escaped
+end
+
+local function truncate_query(connection, entry)
+  local qualified = qualified_table(connection, entry)
+  local kind = ((connection and connection.type) or "sqlite"):lower()
+  if kind == "sqlite" or kind == "sqlite3" then
+    return ("DELETE FROM %s;"):format(qualified)
+  end
+  return ("TRUNCATE TABLE %s;"):format(qualified)
+end
+
+local function table_query_examples(connection, entry)
+  local qualified = qualified_table(connection, entry)
+  return {
+    ("SELECT * FROM %s LIMIT 100;"):format(qualified),
+    ("INSERT INTO %s (...) VALUES (...);"):format(qualified),
+    ("UPDATE %s SET ... WHERE ...;"):format(qualified),
+    ("DELETE FROM %s WHERE ...;"):format(qualified),
+    truncate_query(connection, entry),
+    ("ALTER TABLE %s ADD COLUMN ...;"):format(qualified),
+  }
+end
+
+local function column_query_examples(connection, entry, column)
+  local dialect = dialect_for_connection(connection)
+  local qualified = qualified_table(connection, entry)
+  local quoted_column = dialect:quote_identifier(column.name)
+  return {
+    ("SELECT %s FROM %s LIMIT 100;"):format(quoted_column, qualified),
+    ("SELECT * FROM %s WHERE %s = ?;"):format(qualified, quoted_column),
+    ("SELECT * FROM %s ORDER BY %s LIMIT 100;"):format(qualified, quoted_column),
+  }
+end
+
+local function push_query_examples(lines, examples)
+  if not examples or #examples == 0 then
+    return
+  end
+
+  table.insert(lines, "")
+  table.insert(lines, "## Query examples")
+  table.insert(lines, "")
+  table.insert(lines, "```sql")
+  for _, example in ipairs(examples) do
+    table.insert(lines, example)
+  end
+  table.insert(lines, "```")
+end
+
+local function normalized_query_template_actions(actions)
+  local out = {}
+  local seen = {}
+  for _, action in ipairs(actions or DEFAULT_QUERY_TEMPLATE_ACTIONS) do
+    action = tostring(action or ""):lower()
+    if action ~= "" and not seen[action] then
+      seen[action] = true
+      table.insert(out, action)
+    end
+  end
+  return out
+end
+
 function M.get_handler()
   if not state.config() then
     return nil
@@ -222,6 +309,7 @@ function M.statement_context(bufnr, cursor, line)
   local absolute_offset = math.max(1, math.min(cursor_offset(lines, cursor), #buffer_text + 1))
   local relative_offset = math.max(0, absolute_offset - start_pos)
   local prefix = line_prefix(line or "", cursor[2])
+  local word_prefix = prefix:match("([%w_]+)$") or ""
 
   return {
     text = statement,
@@ -229,6 +317,7 @@ function M.statement_context(bufnr, cursor, line)
     refs = util.parse_query_table_references(statement),
     aliases = build_aliases(statement),
     qualifier = parse_qualifier(prefix),
+    word_prefix = word_prefix,
   }
 end
 
@@ -400,6 +489,8 @@ function M.table_documentation(connection, entry)
     table.insert(lines, ("- type: `%s`"):format(entry.materialization))
   end
 
+  push_query_examples(lines, table_query_examples(connection, entry))
+
   return markdown_bullets(lines)
 end
 
@@ -427,6 +518,104 @@ function M.column_documentation(connection, entry, column)
   end
   if column.ordinal_position ~= nil then
     table.insert(lines, ("- position: `%s`"):format(tostring(column.ordinal_position)))
+  end
+
+  push_query_examples(lines, column_query_examples(connection, entry, column))
+
+  return markdown_bullets(lines)
+end
+
+function M.query_template_actions_for_prefix(prefix, actions)
+  prefix = (prefix or ""):lower()
+  if prefix == "" then
+    return {}
+  end
+
+  local matches = {}
+  local seen = {}
+  for _, action in ipairs(normalized_query_template_actions(actions)) do
+    local matched = action:sub(1, #prefix) == prefix
+    for _, alias in ipairs(QUERY_TEMPLATE_ACTION_ALIASES[action] or {}) do
+      matched = matched or alias:sub(1, #prefix) == prefix
+    end
+    if matched and not seen[action] then
+      seen[action] = true
+      table.insert(matches, action)
+    end
+  end
+  return matches
+end
+
+function M.table_query_template_label(action, entry)
+  return ("%s %s"):format(action:upper(), entry.table)
+end
+
+function M.table_query_template_filter_text(action, connection, entry)
+  local aliases = {
+    ddl = "ddl alter table schema definition",
+    truncate = "truncate empty table delete rows",
+  }
+  return table.concat(vim.tbl_filter(function(value)
+    return value and value ~= ""
+  end, {
+    action,
+    aliases[action],
+    entry.table,
+    entry.schema,
+    connection and connection.id,
+    connection and connection.name,
+    connection and connection.database,
+  }), " ")
+end
+
+function M.table_query_template_snippet(connection, entry, action)
+  action = (action or ""):lower()
+  local qualified = snippet_literal(qualified_table(connection, entry))
+
+  if action == "select" then
+    return ("SELECT * FROM %s LIMIT ${1:100};"):format(qualified)
+  end
+  if action == "insert" then
+    return ("INSERT INTO %s (${1:columns}) VALUES (${2:values});"):format(qualified)
+  end
+  if action == "update" then
+    return ("UPDATE %s SET ${1:column = value} WHERE ${2:condition};"):format(qualified)
+  end
+  if action == "delete" then
+    return ("DELETE FROM %s WHERE ${1:condition};"):format(qualified)
+  end
+  if action == "truncate" then
+    return snippet_literal(truncate_query(connection, entry))
+  end
+  if action == "ddl" then
+    return ("ALTER TABLE %s ADD COLUMN ${1:column_name} ${2:TEXT};"):format(qualified)
+  end
+
+  return ""
+end
+
+function M.query_template_documentation(connection, entry, action)
+  local snippet = M.table_query_template_snippet(connection, entry, action)
+  local lines = {
+    ("# %s"):format(M.table_query_template_label(action, entry)),
+    "",
+    ("- connection: `%s`"):format(connection_display_name(connection)),
+  }
+
+  local database = connection_database(connection)
+  if database and database ~= "" then
+    table.insert(lines, ("- database: `%s`"):format(database))
+  end
+  if entry.schema and entry.schema ~= "" and entry.schema ~= database then
+    table.insert(lines, ("- schema: `%s`"):format(entry.schema))
+  end
+  table.insert(lines, ("- table: `%s`"):format(entry.table))
+
+  if snippet ~= "" then
+    table.insert(lines, "")
+    table.insert(lines, "```sql")
+    table.insert(lines, (snippet:gsub("%${%d+:([^}]+)}", "...")))
+    table.insert(lines, "```")
   end
 
   return markdown_bullets(lines)

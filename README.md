@@ -134,8 +134,9 @@ If you need to pass connector-specific source options together with provider ove
 
 The source completes:
 
-- table names across configured connections, with connection / database context in the docs
-- columns for the current SQL statement when the table can be inferred from `FROM` / `JOIN` / aliases like `u.`
+- table names across configured connections, with connection / database context and small query examples in the docs
+- columns for the current SQL statement when the table can be inferred from `FROM` / `JOIN` / aliases like `u.`, also with query examples
+- table-aware query templates when you start typing `select`, `insert`, `update`, `delete`, `truncate`, `ddl`, or `alter`
 
 ## Sources
 
@@ -232,7 +233,7 @@ Notes:
 
 ## Drawer workflow
 
-- `<CR>` select/open the node under cursor. On a table or column this opens a menu to generate SQL templates (Select/Update/Delete/Insert/DDL). Visual selection of columns is supported — use `v`/`V` to pick multiple columns before `<CR>`.
+- `<CR>` select/open the node under cursor. On a table or column this opens a menu to generate SQL templates (Select/Update/Delete/Truncate/Insert/DDL). Visual selection of columns is supported — use `v`/`V` to pick multiple columns before `<CR>`.
 - `o` toggle (expand/collapse) the node under cursor
 - `cw` edit connection details or rename a scratchpad
 - `dd` delete connection or scratchpad (use with care)
@@ -282,7 +283,7 @@ The default layout keeps the drawer width and the result / call-log heights stab
 
 Additional features
 
-- Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/INSERT templates or an approximate DDL definition; generated text is appended to the current scratchpad (not executed).
+- Query generation: in the drawer, pick columns (visual or single) and use `<CR>` on a table/column to generate SELECT/UPDATE/DELETE/TRUNCATE/INSERT templates or an approximate DDL definition. TRUNCATE runs only after confirmation; other generated text is appended to the current scratchpad.
 - Table picker: `require("connector").pick_table()` / `require("connector").api.ui.drawer_pick_table()` prompts for a table (DB.table) and focuses it in the left drawer. When `fzf-lua` is available, the picker shows a preview with an approximate table definition (columns / PK).
 
 Query history is stored in Neovim state. `require("connector").history(opts)` returns entries for custom

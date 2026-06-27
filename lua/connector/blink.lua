@@ -10,6 +10,9 @@ local source = {}
 local DEFAULT_OPTS = {
   max_table_items = 250,
   max_column_items = 200,
+  max_query_template_items = 120,
+  query_template_items = true,
+  query_template_actions = { "select", "insert", "update", "delete", "truncate", "ddl" },
 }
 
 local function empty_response()
@@ -318,6 +321,76 @@ function source:column_item(ctx, handler, entry, column)
   }
 end
 
+function source:query_template_item(ctx, handler, entry, action)
+  local connection = handler.connections[entry.connection_id]
+  if not connection then
+    return nil
+  end
+
+  local snippet = completion.table_query_template_snippet(connection, entry, action)
+  if snippet == "" then
+    return nil
+  end
+
+  local description = completion.connection_label(connection, entry)
+  local label = completion.table_query_template_label(action, entry)
+
+  return {
+    label = label,
+    filterText = completion.table_query_template_filter_text(action, connection, entry),
+    sortText = table.concat({
+      "0",
+      action,
+      entry.connection_id == completion.current_connection_id(handler) and "0" or "1",
+      entry.schema or "",
+      entry.table,
+      entry.connection_id,
+    }, ":"),
+    kind = kinds.Snippet,
+    detail = ("query template · %s"):format(description),
+    labelDetails = { description = description },
+    documentation = completion.query_template_documentation(connection, entry, action),
+    insertTextFormat = vim.lsp.protocol.InsertTextFormat.Snippet,
+    textEdit = {
+      newText = snippet,
+      range = completion.replace_range(ctx),
+    },
+  }
+end
+
+function source:build_query_template_items(ctx, handler, statement)
+  if self.opts.query_template_items == false then
+    return {}
+  end
+
+  local actions = completion.query_template_actions_for_prefix(statement.word_prefix, self.opts.query_template_actions)
+  if #actions == 0 then
+    return {}
+  end
+
+  local items = {}
+  local schema_filter = completion.schema_filter(statement)
+  if schema_filter then
+    schema_filter = schema_filter:lower()
+  end
+
+  for _, entry in ipairs(completion.collect_loaded_table_entries(handler)) do
+    if not schema_filter or (entry.schema and entry.schema:lower() == schema_filter) then
+      for _, action in ipairs(actions) do
+        local item = self:query_template_item(ctx, handler, entry, action)
+        if item then
+          table.insert(items, item)
+        end
+        if #items >= self.opts.max_query_template_items then
+          return items
+        end
+      end
+    end
+  end
+
+  return items
+end
+
 function source:build_table_items(ctx, handler, statement)
   local items = {}
   local schema_filter = completion.schema_filter(statement)
@@ -379,6 +452,7 @@ function source:get_completions(ctx, callback)
 
     vim.list_extend(items, self:build_column_items(ctx, handler, column_entries))
     if not prefer_columns then
+      vim.list_extend(items, self:build_query_template_items(ctx, handler, statement))
       vim.list_extend(items, self:build_table_items(ctx, handler, statement))
     end
 
