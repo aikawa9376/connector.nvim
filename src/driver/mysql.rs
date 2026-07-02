@@ -28,17 +28,11 @@ impl Driver for MysqlDriver {
             })
             .collect::<Vec<_>>();
 
-        let mut rows = Vec::new();
-        while let Some(row) = result.next() {
-            let row = row?;
-            let values = row
-                .unwrap()
-                .into_iter()
-                .map(mysql_value_to_json)
-                .collect::<Vec<_>>();
-            rows.push(values);
-        }
-
+        // For non-SELECT statements (UPDATE/INSERT/DELETE), columns is empty and the
+        // result state is InEmptySet. affected_rows() must be read *before* calling
+        // next() on the QueryResult, because next() on an InEmptySet state calls
+        // handle_next() which advances the state and discards the OK packet data,
+        // causing affected_rows() to return 0 afterwards.
         if columns.is_empty() {
             let affected_rows = result.affected_rows();
             drop(result);
@@ -50,6 +44,17 @@ impl Driver for MysqlDriver {
                 row_count: 1,
                 message: None,
             });
+        }
+
+        let mut rows = Vec::new();
+        while let Some(row) = result.next() {
+            let row = row?;
+            let values = row
+                .unwrap()
+                .into_iter()
+                .map(mysql_value_to_json)
+                .collect::<Vec<_>>();
+            rows.push(values);
         }
 
         Ok(ExecuteResponse {
