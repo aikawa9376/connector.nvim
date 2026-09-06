@@ -652,7 +652,7 @@ function ui.editor_pick_scratchpad(opts)
           end
         end,
         ["ctrl-g"] = function()
-          ui.editor_grep_scratchpads(opts)
+          vim.schedule(function() ui.editor_grep_scratchpads(opts) end)
         end,
       },
     })
@@ -693,6 +693,9 @@ function ui.editor_grep_scratchpads(opts)
   end
 
   local grep_opts = {
+    -- An absent search asks for input; an empty search opens ordinary grep
+    -- immediately so fzf can filter the scratchpad contents.
+    search = opts.search or "",
     cwd = root,
     prompt = "Scratchpad Grep> ",
     previewer = "builtin",
@@ -703,10 +706,6 @@ function ui.editor_grep_scratchpads(opts)
       ["--nth"] = "-1,1..-2",
     },
   }
-  if opts.search and opts.search ~= "" then
-    grep_opts.search = opts.search
-  end
-
   fzf.grep(grep_opts)
 end
 

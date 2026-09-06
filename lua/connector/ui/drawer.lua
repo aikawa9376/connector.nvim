@@ -57,6 +57,7 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
     expanded = {
       ["root:connections"] = true,
       ["root:scratchpads"] = true,
+      ["root:recent_scratchpads"] = true,
       ["root:history"] = false,
     },
     candies = config.disable_candies and {} or vim.tbl_deep_extend("force", candies_module.drawer_defaults(), config.candies or {}),
@@ -92,6 +93,9 @@ function DrawerUI:new(handler, editor, result, config, state_helpers)
     end
     o:expand_query_context(payload)
     o:refresh()
+  end)
+  editor:register_event_listener("recent_notes_changed", function()
+    o:schedule_refresh()
   end)
   editor:register_event_listener("notes_changed", function()
     o:refresh()
@@ -1301,6 +1305,26 @@ function DrawerUI:refresh()
     end
   end
 
+  local recent_limit = self.config.recent_scratchpads_limit or 10
+  if recent_limit > 0 then
+    table.insert(lines, buffer_line.new_builder())
+    self:add_line(lines, 0, "Recent scratchpads", {
+      kind = "root", key = "root:recent_scratchpads",
+    }, { expandable = true })
+    if self:is_expanded("root:recent_scratchpads") then
+      local notes = self.editor:recent_notes(recent_limit)
+      for _, note in ipairs(notes) do
+        self:add_line(lines, 1, note.namespace .. "/" .. note.name, {
+          kind = "scratchpad", key = "recent_scratchpad:" .. note.id,
+          note_id = note.id, namespace = note.namespace,
+        }, { active = current_note and current_note.id == note.id })
+      end
+      if #notes == 0 then
+        self:add_line(lines, 1, "No recent scratchpads", { kind = "recent_empty", key = "recent:empty" })
+      end
+    end
+  end
+
   table.insert(lines, buffer_line.new_builder())
   self:add_line(lines, 0, "Scratchpads", {
     kind = "root",
@@ -1470,7 +1494,72 @@ function DrawerUI:refresh()
   end
 end
 
+function DrawerUI:open_menu()
+  local node = self:node_at_cursor()
+  local items = {}
+  local function add(label, action) table.insert(items, { label = label, action = action }) end
+  if node then
+    local kind = node.kind
+    if kind == "scratchpad" then
+      add("Open scratchpad", "action_1")
+      add("Rename scratchpad", "action_2")
+      add("Delete scratchpad", "action_3")
+    elseif kind == "scratchpad_dir" then
+      add("Expand/collapse directory", "toggle")
+      add("Rename directory", "action_2")
+    elseif kind == "table" or kind == "column" then
+      add("Generate SQL / DDL", "action_1")
+      add("Expand/collapse", "toggle")
+    elseif kind == "history_call" then
+      local call = self.handler:get_call(node.call_id)
+      if call and (call.state == "history" or call.state == "archived" or call.state == "executing") then
+        add(call.state == "history" and "Re-execute query" or "Show result", "action_1")
+      end
+      if call and call.state == "executing" then add("Cancel running query", "cancel_call") end
+    elseif kind == "history_more" then
+      add("Pick query history", "action_1")
+    elseif kind == "edit_source" then
+      add("Edit connection source", "action_1")
+    elseif kind == "connection" then
+      add("Select connection / expand", "action_1")
+      add("Edit connection", "action_2")
+      add("Delete connection", "action_3")
+      add("Ignore/unignore for project", "action_ignore")
+    elseif kind == "database" then
+      add("Select database / expand", "action_1")
+      add("Ignore/unignore for project", "action_ignore")
+    elseif kind == "root" or kind == "source" or kind == "ignored_databases_group" or kind == "ignored_connection_group" then
+      add("Expand/collapse", "toggle")
+    end
+    if kind == "scratchpad" or kind == "scratchpad_dir" or node.key == "root:scratchpads" or node.key == "root:recent_scratchpads" or kind == "recent_empty" then
+      add("New scratchpad", "action_add")
+    elseif kind == "connection" or kind == "source" or kind == "edit_source" or node.key == "root:connections" then
+      add("Add connection", "action_add")
+    end
+  end
+  add("Toggle project-only scratchpad filter", "action_toggle_filter")
+  add("Previous section", "jump_prev_root")
+  add("Next section", "jump_next_root")
+  add("Refresh", "refresh")
+  vim.list_extend(items, require("connector.ui.menu").picker_items())
+  require("connector.ui.menu").open(self, "Drawer menu", items, function(action)
+    if action == "refresh" then return self:refresh() end
+    if node then
+      for row, current in pairs(self.line_map) do
+        if current.key == node.key then
+          vim.api.nvim_win_set_cursor(0, { row, 0 })
+          return self:do_action(action)
+        end
+      end
+    elseif action == "action_toggle_filter" then
+      self.config.project_filter_only_current = not self.config.project_filter_only_current
+      self:refresh()
+    end
+  end)
+end
+
 function DrawerUI:do_action(action)
+  if action == "menu" then return self:open_menu() end
   local node = self:node_at_cursor()
   if not node then
     return

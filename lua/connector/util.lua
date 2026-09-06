@@ -1160,9 +1160,15 @@ function M.find_project_root(path)
   return nil
 end
 
+local function scratchpad_root()
+  local state = package.loaded["connector.api.state"]
+  local cfg = type(state) == "table" and state.config() or nil
+  return vim.fs.normalize(cfg and cfg.editor.directory or M.state_path("connector", "scratchpads"))
+end
+
 function M.is_scratchpad_path(path)
-  local scratch_root = M.state_path("connector", "scratchpads")
-  return vim.startswith(path, scratch_root)
+  local root = scratchpad_root()
+  return vim.startswith(vim.fs.normalize(path), root .. "/")
 end
 
 function M.project_from_namespace(namespace)
@@ -1204,8 +1210,8 @@ end
 function M.resolve_project(path)
   path = path or vim.api.nvim_buf_get_name(0)
   if M.is_scratchpad_path(path) then
-    local scratch_root = M.state_path("connector", "scratchpads")
-    local relative = path:sub(#scratch_root + 2)
+    local scratch_root = scratchpad_root()
+    local relative = vim.fs.normalize(path):sub(#scratch_root + 2)
     local namespace = vim.fs.dirname(relative)
     if namespace == "." then namespace = relative:match("^([^/]+)") end
     return M.project_from_namespace(namespace)
@@ -1220,15 +1226,32 @@ function M.resolve_project(path)
   }
 end
 
+-- Reuse branch lookups during one synchronous UI update. Expire on the next
+-- event-loop turn so a checkout is reflected without a persistent stale cache.
+local branch_cache = {}
+local branch_cache_scheduled = false
+
 function M.get_git_branch(path)
   path = path or vim.api.nvim_buf_get_name(0)
   if path == "" then path = vim.fn.getcwd() end
   local root = M.find_project_root(path)
   if not root then return nil end
+  if branch_cache[root] ~= nil then
+    return branch_cache[root] or nil
+  end
   local result = vim.system({ "git", "-C", root, "branch", "--show-current" }, { text = true }):wait()
+  if not branch_cache_scheduled then
+    branch_cache_scheduled = true
+    vim.schedule(function()
+      branch_cache = {}
+      branch_cache_scheduled = false
+    end)
+  end
+  branch_cache[root] = false
   if result.code == 0 then
     local branch = vim.trim(result.stdout)
-    return branch ~= "" and branch or nil
+    branch_cache[root] = branch ~= "" and branch or false
+    return branch_cache[root] or nil
   end
   return nil
 end

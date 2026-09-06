@@ -197,7 +197,8 @@ end
 function ResultUI:open_menu()
   local call = self:get_call()
   if not call then
-    util.notify("No result selected.", vim.log.levels.INFO)
+    local menu = require("connector.ui.menu")
+    menu.open(self, "Result menu", menu.picker_items())
     return
   end
 
@@ -235,6 +236,8 @@ function ResultUI:open_menu()
     table.insert(items, { label = "Cancel running query (<C-c>)", action = "cancel" })
   end
 
+  vim.list_extend(items, require("connector.ui.menu").picker_items())
+  local dispatch = require("connector.ui.menu").dispatcher()
   vim.ui.select(vim.tbl_map(function(i) return i.label end, items), { prompt = "Result menu" }, function(_choice, idx)
     local item = idx and items[idx] or nil
     if not item then
@@ -244,36 +247,40 @@ function ResultUI:open_menu()
       return
     end
 
-    if item.action == "instant_query_change" then
-      self:open_query_editor(call.query or "", {
-        title = "Instant Query Change",
-        on_submit = function(text)
-          local latest = self.handler:get_call(call.id)
-          local base = latest or call
-          if base and base.state == "executing" then
-            pcall(self.handler.call_cancel, self.handler, base.id)
-          end
-
-          local conn_id = (base and base.connection_id) or call.connection_id
-          self.handler:connection_execute(conn_id, text, function(new_call)
-            if new_call then
-              self:set_call(new_call)
+    dispatch(function()
+      if item.run then
+        item.run()
+      elseif item.action == "instant_query_change" then
+        self:open_query_editor(call.query or "", {
+          title = "Instant Query Change",
+          on_submit = function(text)
+            local latest = self.handler:get_call(call.id)
+            local base = latest or call
+            if base and base.state == "executing" then
+              pcall(self.handler.call_cancel, self.handler, base.id)
             end
-          end)
-        end,
-      })
-    elseif item.action == "scratchpad_show" then
-      local latest = self.handler:get_call(call.id)
-      self:append_query_to_scratchpad((latest and latest.query) or call.query or "")
-    elseif item.action == "cancel" then
-      local latest = self.handler:get_call(call.id)
-      if latest and latest.state == "executing" then
-        pcall(self.handler.call_cancel, self.handler, latest.id)
+
+            local conn_id = (base and base.connection_id) or call.connection_id
+            self.handler:connection_execute(conn_id, text, function(new_call)
+              if new_call then
+                self:set_call(new_call)
+              end
+            end)
+          end,
+        })
+      elseif item.action == "scratchpad_show" then
+        local latest = self.handler:get_call(call.id)
+        self:append_query_to_scratchpad((latest and latest.query) or call.query or "")
+      elseif item.action == "cancel" then
+        local latest = self.handler:get_call(call.id)
+        if latest and latest.state == "executing" then
+          pcall(self.handler.call_cancel, self.handler, latest.id)
+        end
+      else
+        -- Reuse existing key-bound actions.
+        self:do_action(item.action)
       end
-    else
-      -- Reuse existing key-bound actions.
-      self:do_action(item.action)
-    end
+    end)
   end)
 end
 

@@ -3,11 +3,15 @@ local backend = require("connector.backend")
 local config = require("connector.config")
 
 local connector = {
-  api = {
-    context = api.context,
-    core = api.core,
-    ui = api.ui,
-  },
+  api = setmetatable({}, {
+    __index = function(self, key)
+      if key == "context" or key == "core" or key == "ui" then
+        local module = api[key]
+        rawset(self, key, module)
+        return module
+      end
+    end,
+  }),
 }
 
 local blink_provider_keys = {

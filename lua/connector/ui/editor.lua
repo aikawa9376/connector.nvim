@@ -53,6 +53,8 @@ function EditorUI:new(handler, result, config, state_helpers, result_config)
     notes_by_buf = {},
     notes_by_file = {},
     current_note_id = nil,
+    recent_note_ids = {},
+    recent_dirty = false,
     window = nil,
     state_helpers = state_helpers or {},
     explicit_visual_range = nil,
@@ -62,6 +64,10 @@ function EditorUI:new(handler, result, config, state_helpers, result_config)
   self.__index = self
   util.ensure_dir(config.directory)
   o:load_notes()
+  o:load_recent_notes()
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    callback = function() o:save_recent_notes() end,
+  })
   o:register_event_listener("notes_changed", function()
     o:update_winbar()
   end)
@@ -79,6 +85,87 @@ function EditorUI:new(handler, result, config, state_helpers, result_config)
     o:update_winbar()
   end)
   return o
+end
+
+function EditorUI:recent_notes_path()
+  return util.joinpath(self.config.directory, ".connector-recent.json")
+end
+
+function EditorUI:load_recent_notes()
+  local ok, paths = pcall(util.read_json, self:recent_notes_path(), {})
+  local seen = {}
+  for _, path in ipairs(ok and type(paths) == "table" and paths or {}) do
+    local id = type(path) == "string" and self.notes_by_file[path] or nil
+    if id and not seen[id] then
+      seen[id] = true
+      table.insert(self.recent_note_ids, id)
+    end
+  end
+end
+
+function EditorUI:save_recent_notes()
+  if not self.recent_dirty then return end
+  local paths = {}
+  for _, id in ipairs(self.recent_note_ids) do
+    local note = self:search_note(id)
+    if note then table.insert(paths, note.file) end
+  end
+  local ok, err = pcall(util.write_json, self:recent_notes_path(), paths)
+  if ok then self.recent_dirty = false else util.notify(tostring(err), vim.log.levels.WARN) end
+end
+
+function EditorUI:schedule_recent_save()
+  self.recent_dirty = true
+  if self.recent_save_scheduled then return end
+  self.recent_save_scheduled = true
+  vim.schedule(function()
+    self.recent_save_scheduled = false
+    self:save_recent_notes()
+  end)
+end
+
+function EditorUI:touch_recent_note(note)
+  if self.recent_note_ids[1] == note.id then return end
+  self.recent_note_ids = vim.tbl_filter(function(id) return id ~= note.id end, self.recent_note_ids)
+  table.insert(self.recent_note_ids, 1, note.id)
+  self:schedule_recent_save()
+  self:emit("recent_notes_changed", note)
+end
+
+function EditorUI:recent_notes(limit)
+  local notes = {}
+  if limit <= 0 then return notes end
+  for _, id in ipairs(self.recent_note_ids) do
+    local note = self:search_note(id)
+    if note and vim.uv.fs_stat(note.file) then
+      table.insert(notes, note)
+      if #notes >= limit then break end
+    end
+  end
+  return notes
+end
+
+function EditorUI:open_menu()
+  self:capture_visual_range()
+  local items = {
+    { label = "Run query under cursor", action = "run_under_cursor" },
+    { label = "Run whole scratchpad", action = "run_file" },
+    { label = "Run query in floating window", action = "run_in_float" },
+    { label = "Reveal table in drawer", action = "jump_to_table" },
+  }
+  if self.explicit_visual_range then
+    table.insert(items, 1, { label = "Run selected queries", action = "run_selection" })
+  end
+  local selection = self.explicit_visual_range
+  self.explicit_visual_range = nil
+  vim.list_extend(items, require("connector.ui.menu").picker_items())
+  require("connector.ui.menu").open(self, "Scratchpad menu", items, function(action)
+    if action == "run_selection" or action == "run_in_float" then
+      self.explicit_visual_range = selection
+    end
+    self:do_action(action)
+    self.explicit_visual_range = nil
+  end)
 end
 
 function EditorUI:register_event_listener(event, listener)
@@ -139,6 +226,7 @@ function EditorUI:update_note_file(note, new_file)
     self.notes_by_file[note.file] = nil
   end
   note.file = new_file
+  self:schedule_recent_save()
   self.notes_by_file[new_file] = note.id
 
   if note.bufnr and vim.api.nvim_buf_is_valid(note.bufnr) then
@@ -197,6 +285,14 @@ end
 
 function EditorUI:setup_note_autocmds(bufnr)
   local group = vim.api.nvim_create_augroup("connector-editor-winbar-" .. bufnr, { clear = true })
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      local note = self:search_note_with_buf(bufnr)
+      if note then self:touch_recent_note(note) end
+    end,
+  })
   vim.api.nvim_create_autocmd({ "BufEnter", "TextChanged", "TextChangedI" }, {
     group = group,
     buffer = bufnr,
@@ -339,6 +435,8 @@ function EditorUI:namespace_remove_note(id, note_id)
     return value ~= note_id
   end, self.note_order)
   self:unindex_note(note)
+  self.recent_note_ids = vim.tbl_filter(function(value) return value ~= note_id end, self.recent_note_ids)
+  self:schedule_recent_save()
   if self.current_note_id == note_id then
     self.current_note_id = self.note_order[1]
   end
@@ -479,6 +577,7 @@ function EditorUI:set_current_note(id)
   local note = assert(self:search_note(id), "note not found: " .. id)
   local bufnr = self:ensure_note_buf(note)
   self.current_note_id = id
+  self:touch_recent_note(note)
   if self.state_helpers and self.state_helpers.set_current_project then
     self.state_helpers.set_current_project(util.resolve_project(note.file), bufnr)
   end
@@ -699,6 +798,7 @@ function EditorUI:jump_to_table_under_cursor()
 end
 
 function EditorUI:do_action(action)
+  if action == "menu" then return self:open_menu() end
   self:ensure_default_note()
   local note = assert(self:search_note(self.current_note_id))
   local bufnr = assert(self:ensure_note_buf(note), "failed to load scratchpad buffer")

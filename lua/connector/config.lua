@@ -20,11 +20,13 @@ function config.default()
       drawer_max_items = 50,
     },
     drawer = {
+      recent_scratchpads_limit = 10,
       project_filter_only_current = false,
       disable_help = false,
       disable_candies = false,
       candies = require("connector.ui.candies").drawer_defaults(),
       mappings = {
+        { key = "g?", mode = "n", action = "menu" },
         { key = "r", mode = "n", action = "refresh" },
         { key = "<CR>", mode = "n", action = "action_1" },
         { key = "<CR>", mode = "v", action = "action_1" },
@@ -44,6 +46,8 @@ function config.default()
       page_size = 100,
       focus_result = false,
       mappings = {
+        { key = "g?", mode = "n", action = "menu" },
+        { key = "g?", mode = "x", action = "menu" },
         { key = "?", mode = "n", action = "menu" },
         { key = "?", mode = "v", action = "menu" },
         { key = "?", mode = "x", action = "menu" },
@@ -75,6 +79,8 @@ function config.default()
       ---Default is a single space.
       winbar_section_separator = " ",
       mappings = {
+        { key = "g?", mode = "n", action = "menu" },
+        { key = "g?", mode = "x", action = "menu" },
         { key = "BB", mode = "v", action = "run_selection" },
         { key = "BB", mode = "n", action = "run_file" },
         { key = "<CR>", mode = "v", action = "run_selection" },
@@ -89,6 +95,7 @@ function config.default()
       disable_candies = false,
       candies = require("connector.ui.candies").call_log_defaults(),
       mappings = {
+        { key = "g?", mode = "n", action = "menu" },
         { key = "<CR>", mode = "n", action = "show_result" },
         { key = "<C-c>", mode = "n", action = "cancel_call" },
       },
@@ -100,7 +107,7 @@ end
 function config.merge_with_default(changes)
   changes = changes or {}
   local merged = vim.tbl_deep_extend("force", config.default(), changes)
-  if changes.sources and #changes.sources > 0 then
+  if changes.sources ~= nil then
     merged.sources = changes.sources
   end
   if changes.window_layout then
@@ -116,18 +123,22 @@ function config.validate(cfg)
     history = { cfg.history, "table" },
     result = { cfg.result, "table" },
     editor = { cfg.editor, "table" },
-    drawer = {
-      project_filter_only_current = false, cfg.drawer, "table" },
+    drawer = { cfg.drawer, "table" },
     call_log = { cfg.call_log, "table" },
     window_layout = { cfg.window_layout, "table" },
   })
   vim.validate({
+    recent_scratchpads_limit = { cfg.drawer.recent_scratchpads_limit, "number" },
     history_display = { cfg.history.display, "string" },
     history_drawer_max_items = { cfg.history.drawer_max_items, "number" },
     window_layout_open = { cfg.window_layout.open, "function" },
     window_layout_close = { cfg.window_layout.close, "function" },
     window_layout_is_open = { cfg.window_layout.is_open, "function" },
   })
+  local limit = cfg.drawer.recent_scratchpads_limit
+  if limit < 0 or limit == math.huge or limit ~= math.floor(limit) then
+    error("drawer.recent_scratchpads_limit must be a non-negative integer")
+  end
   if cfg.history.display ~= "panel" and cfg.history.display ~= "drawer" then
     error("history.display must be 'panel' or 'drawer'")
   end

@@ -1,5 +1,3 @@
-local api_ui = require("connector.api.ui")
-
 local layouts = {}
 
 layouts.Default = {}
@@ -131,6 +129,7 @@ function layouts.Default:setup_autocmds()
 end
 
 function layouts.Default:open()
+  local api_ui = require("connector.api.ui")
   local state_api = require("connector.api.state")
   local util = require("connector.util")
   -- Capture the project for the buffer where the user invoked open so Editor uses the expected project

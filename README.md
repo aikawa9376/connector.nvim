@@ -231,6 +231,51 @@ Notes:
 - Oracle uses the pure Rust `oracle-rs` driver and expects `oracle://user:password@host:port/service`.
 - BigQuery and Databricks from `nvim-dbee` are not implemented yet.
 
+## Pane menus and recent scratchpads
+
+Press `g?` in a Connector pane to select an existing action:
+
+- **Drawer:** actions for the node under the cursor (open, rename, delete,
+  connection/database selection, SQL generation), filtering, section navigation,
+  and refresh.
+- **Editor:** run the current statement, whole file, or visual selection; run in a
+  floating window; reveal the table in the drawer. `g?` also works in visual mode.
+- **Result:** the existing result menu, including query editing, paging, history,
+  cell editing and export. `?` still works; visual `g?` includes selection export.
+  An empty result pane offers the search and picker actions below.
+- **History panel:** show a result or re-execute saved history, cancel a running
+  query, and refresh.
+
+Every pane also offers **Pick scratchpad**, **Grep scratchpads**, **Pick table**,
+and **Pick query history**. These reuse the existing scratchpad, grep, table and
+history pickers, including their project filters. Grep requires `fzf-lua`, just
+like `:Connector scratchgrep`. Opening the menu does not run searches or fetch
+database metadata; that work starts when the corresponding item is selected.
+Picker actions run after the menu closes and keep focus in the newly opened
+picker. **Grep scratchpads** opens ordinary grep directly, without a separate
+search-input prompt or live grep; fzf filters the scratchpad contents. An explicit
+search passed to `:Connector scratchgrep [query...]` is still respected.
+
+The drawer's **Recent scratchpads** section lists the most recently opened or
+visited scratchpads, newest first, without duplicates. `<CR>` opens an entry;
+`g?`, `cw` and `dd` provide the same actions as the regular scratchpad tree.
+Labels include the namespace to distinguish files with the same name. This list
+covers all projects, independently of the regular tree's project filter.
+
+```lua
+require("connector").setup({
+  drawer = {
+    recent_scratchpads_limit = 10, -- default; 0 hides the section
+  },
+})
+```
+
+Usage order is saved in `.connector-recent.json` inside `editor.directory` and
+restored on the next launch. Only visited files enter the list; scanning existing
+scratchpads does not mark them as used. Renamed files retain their position, and
+missing/deleted files are omitted. Writes are coalesced after UI activity and
+flushed on exit; history loading does not load scratchpad buffers.
+
 ## Drawer workflow
 
 - `<CR>` select/open the node under cursor. On a table or column this opens a menu to generate SQL templates (Select/Update/Delete/Truncate/Insert/DDL). Visual selection of columns is supported — use `v`/`V` to pick multiple columns before `<CR>`.

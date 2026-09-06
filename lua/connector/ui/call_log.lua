@@ -75,7 +75,33 @@ function CallLogUI:show(winid)
   self:refresh()
 end
 
+function CallLogUI:open_menu()
+  local call_id = self.line_map[vim.api.nvim_win_get_cursor(0)[1]]
+  local call = call_id and self.handler:get_call(call_id)
+  local items = { { label = "Refresh history", action = "refresh" } }
+  if call then
+    if call.state == "history" or call.state == "archived" or call.state == "executing" then
+      table.insert(items, 1, { label = call.state == "history" and "Re-execute query" or "Show result", action = "show_result" })
+    end
+    if call.state == "executing" then
+      table.insert(items, { label = "Cancel running query", action = "cancel_call" })
+    end
+  end
+  vim.list_extend(items, require("connector.ui.menu").picker_items())
+  require("connector.ui.menu").open(self, "History menu", items, function(action)
+    if action == "refresh" then return self:refresh() end
+    -- Restore the selected call after any asynchronous history redraw.
+    for row, id in pairs(self.line_map) do
+      if id == call_id then
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+        return self:do_action(action)
+      end
+    end
+  end)
+end
+
 function CallLogUI:do_action(action)
+  if action == "menu" then return self:open_menu() end
   local call_id = self.line_map[vim.api.nvim_win_get_cursor(0)[1]]
   if not call_id then
     return

@@ -1,10 +1,3 @@
-local CallLogUI = require("connector.ui.call_log")
-local candies_module = require("connector.ui.candies")
-local DrawerUI = require("connector.ui.drawer")
-local EditorUI = require("connector.ui.editor")
-local Handler = require("connector.handler")
-local ResultUI = require("connector.ui.result")
-local window = require("connector.ui.window")
 local util = require("connector.util")
 
 local M = {}
@@ -51,6 +44,7 @@ local function setup_core()
   if not m.setup_called then
     error("setup() has not been called yet")
   end
+  local Handler = require("connector.handler")
   m.handler = Handler:new(m.config)
   m.handler:set_project_provider(function()
     return m.current_project or set_project_from_buf(vim.api.nvim_get_current_buf())
@@ -63,6 +57,13 @@ local function setup_ui()
     return
   end
   setup_core()
+
+  local CallLogUI = require("connector.ui.call_log")
+  local candies_module = require("connector.ui.candies")
+  local DrawerUI = require("connector.ui.drawer")
+  local EditorUI = require("connector.ui.editor")
+  local ResultUI = require("connector.ui.result")
+  local window = require("connector.ui.window")
 
   -- Seed from the SQL buffer that opened connector. Non-SQL connector buffers must not change project context.
   m.current_project = m.current_project or set_project_from_buf(vim.api.nvim_get_current_buf())
@@ -122,7 +123,7 @@ local function setup_ui()
     callback = function()
       set_project_from_buf(vim.api.nvim_get_current_buf())
       if m.drawer and m.drawer.window and vim.api.nvim_win_is_valid(m.drawer.window) then
-        m.drawer:refresh()
+        m.drawer:schedule_refresh()
       end
     end,
   })
