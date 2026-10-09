@@ -303,9 +303,7 @@ function DrawerUI:candy_for_kind(kind, expandable, materialization, active, opts
     return candies_module.get(self.candies, "note")
   elseif kind == "scratchpad_dir" then
     if opts and opts.is_active_project then
-      local candy = vim.deepcopy(candies_module.get(self.candies, "connection_active", "source"))
-      candy.icon = "" -- Open folder icon
-      return candy
+      return candies_module.get(self.candies, "connection_active", "source")
     end
     -- Normal folders and non-active project folders look the same (no color)
     return candies_module.get(self.candies, expandable and "none_dir" or "none")
@@ -329,17 +327,17 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
 
   if self.config.disable_candies then
     local active = opts.active and "● " or ""
-    buffer_line.append(builder, active .. label)
+    local text_hl = opts.active_context and "Identifier" or (opts.inactive_context and "Comment" or nil)
+    buffer_line.append(builder, active .. label, text_hl)
     if depth >= 1 and opts.child_count ~= nil then
       buffer_line.append(builder, (" (%d)"):format(opts.child_count), "Comment")
     end
   else
     local candy = self:candy_for_kind(node.kind, opts.expandable, node.materialization, opts.active, opts)
-    local c = vim.deepcopy(candy)
+    local c = { icon = candy.icon, icon_highlight = candy.icon_highlight, text_highlight = candy.text_highlight }
 
     -- current connection id (used to highlight connection children when the connection is active)
-    local current_conn = self.handler and self.handler:get_current_connection()
-    local current_conn_id = current_conn and current_conn.id or nil
+    local current_conn_id = self.handler.current_connection_id
 
     -- Hide the help icon for help items
     if node.kind == "help" then
@@ -407,7 +405,7 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
       end
     end
 
-    -- Connection-related nodes: selected -> colored icon + normal text, otherwise normal text + candy icon (children not highlighted)
+    -- Dim inactive connections/databases; accent table names in the active DB.
     if node.kind == "connection" or node.kind == "database" or node.kind == "table" or node.kind == "schema" or node.kind == "column" or node.kind == "ignored_connection_group" then
       local conn_active = node.connection_id and (node.connection_id == current_conn_id)
 
@@ -419,10 +417,12 @@ function DrawerUI:add_line(lines, depth, label, node, opts)
         -- Selected node: color icon and text per candy
         c.icon_highlight = candy.icon_highlight
         c.text_highlight = (candy.text_highlight and candy.text_highlight ~= "") and candy.text_highlight or candy.icon_highlight
-      elseif not conn_active then
-        -- Non-active connection and its children: show as comment (dim)
+      elseif not conn_active or opts.inactive_context then
+        -- Non-active connection or database children: show as comment (dim)
         c.text_highlight = "Comment"
         c.icon_highlight = "Comment"
+      elseif opts.active_context then
+        c.text_highlight = (candy.text_highlight and candy.text_highlight ~= "") and candy.text_highlight or "Identifier"
       end
     end
 
@@ -644,16 +644,14 @@ function DrawerUI:connection_prompt(initial, done)
   step(1)
 end
 
-function DrawerUI:render_structure_items(lines, depth, conn, items)
+function DrawerUI:render_structure_items(lines, depth, conn, items, database_active)
   table.sort(items, function(left, right)
     return left.name < right.name
   end)
-  local current_conn = self.handler and self.handler:get_current_connection()
-  local current_conn_id = current_conn and current_conn.id or nil
+  local is_active = self.handler.current_connection_id == conn.id and database_active ~= false
   for _, item in ipairs(items) do
     local schema = item.schema
     local table_key = ("table:%s:%s:%s"):format(conn.id, schema or "", item.name)
-    local is_conn_active = current_conn_id == conn.id
     self:add_line(lines, depth, item.name, {
       kind = "table",
       key = table_key,
@@ -661,7 +659,7 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
       schema = schema ~= "" and schema or nil,
       table = item.name,
       materialization = item.materialization,
-    }, { expandable = true })
+    }, { expandable = true, active_context = is_active, inactive_context = not is_active })
 
     if self:is_expanded(table_key) then
       local column_state = self:column_state(conn.id, {
@@ -685,7 +683,7 @@ function DrawerUI:render_structure_items(lines, depth, conn, items)
             schema = schema ~= "" and schema or nil,
             table = item.name,
             column = col.name,
-          })
+          }, { inactive_context = not is_active })
         end
       elseif column_state.status == "loading" then
         self:add_loading_line(lines, depth + 1, "loading columns...")
@@ -709,6 +707,7 @@ end
 
 function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ignored)
   local db_key = ("database:%s:%s"):format(conn.id, database)
+  local is_active = self.handler.current_connection_id == conn.id and database == current_db
   local child_count = self:structure_count_state(conn.id, database)
   self:add_line(lines, depth, database, {
     kind = "database",
@@ -716,11 +715,11 @@ function DrawerUI:add_database_line(lines, depth, conn, database, current_db, ig
     connection_id = conn.id,
     database = database,
     ignored = ignored == true,
-  }, { expandable = true, active = database == current_db, ignored = ignored == true, child_count = child_count })
+  }, { expandable = true, active = is_active, ignored = ignored == true, child_count = child_count })
   if self:is_expanded(db_key) then
     local state = self:structure_state(conn.id, database)
     if state.status == "ready" then
-      self:render_structure_items(lines, depth + 1, conn, state.items)
+      self:render_structure_items(lines, depth + 1, conn, state.items, is_active)
     elseif state.status == "loading" then
       self:add_loading_line(lines, depth + 1, "loading structure...", { ignored = ignored == true })
     else
@@ -1172,8 +1171,7 @@ function DrawerUI:refresh()
         }, { expandable = true, active = source_active, child_count = visible_connections })
         if self:is_expanded(source_key) then
           for _, conn in ipairs(source_connections) do
-            local active = self.handler:get_current_connection()
-            local is_active = active and active.id == conn.id
+            local is_active = active_conn and active_conn.id == conn.id
             local db_meta = get_database_meta(conn)
             local has_databases = db_meta.ok and #db_meta.databases > 0
             local conn_key = "connection:" .. conn.id
@@ -1421,7 +1419,7 @@ function DrawerUI:refresh()
       key = "root:history",
     }, { expandable = true })
     if self:is_expanded("root:history") then
-      local calls = call_history.visible_calls(self.handler)
+      local calls = call_history.visible_calls(self.handler, { summary = true })
       if #calls == 0 then
         local builder = buffer_line.new_builder()
         buffer_line.append(builder, "  History will be displayed here!", "MoreMsg")
@@ -1464,7 +1462,7 @@ function DrawerUI:refresh()
     end
   end
 
-  buffer_line.render(self.bufnr, self.ns, lines)
+  self.render_state = buffer_line.render(self.bufnr, self.ns, lines, self.render_state)
 
   -- Move cursor to the active namespace so the drawer follows the current project/branch.
   if self.window and vim.api.nvim_win_is_valid(self.window) and active_namespace then

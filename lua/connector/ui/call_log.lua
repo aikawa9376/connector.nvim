@@ -46,7 +46,7 @@ function CallLogUI:build_call_line(call)
 end
 
 function CallLogUI:refresh()
-  local calls = call_history.visible_calls(self.handler)
+  local calls = call_history.visible_calls(self.handler, { summary = true })
   local lines = {}
   self.line_map = {}
 
@@ -54,7 +54,7 @@ function CallLogUI:refresh()
     local builder = buffer_line.new_builder()
     buffer_line.append(builder, "Call log will be displayed here!", "MoreMsg")
     table.insert(lines, builder)
-    buffer_line.render(self.bufnr, self.ns, lines)
+    self.render_state = buffer_line.render(self.bufnr, self.ns, lines, self.render_state)
     return
   end
 
@@ -63,7 +63,7 @@ function CallLogUI:refresh()
     self.line_map[#lines] = call.id
   end
 
-  buffer_line.render(self.bufnr, self.ns, lines)
+  self.render_state = buffer_line.render(self.bufnr, self.ns, lines, self.render_state)
 end
 
 function CallLogUI:show(winid)

@@ -1,0 +1,63 @@
+*connector.txt*  Database client with a Rust backend and Lua frontend
+
+==============================================================================
+INTRODUCTION                                                  *connector.nvim*
+
+connector.nvim provides connection browsing, SQL scratchpads, query history,
+result paging, and CSV/JSON/table export. Requires Neovim 0.10 or newer and a
+compiled connector-backend binary.
+
+See README.md in the plugin directory for full configuration, connection URL
+examples, optional database drivers, and blink.cmp integration.
+
+==============================================================================
+SETUP                                                        *connector-setup*
+>
+    require("connector").setup({
+      history = { display = "drawer" },
+      sources = {
+        require("connector.sources").EnvSource:new("CONNECTOR_CONNECTIONS"),
+        require("connector.sources").FileSource:new(
+          vim.fn.stdpath("state") .. "/connector/connections.json"
+        ),
+      },
+    })
+<
+For lazy.nvim, use cmd = "Connector" and this build command:
+>
+    build = "cargo build --release --manifest-path Cargo.toml"
+<
+The default backend includes SQLite, PostgreSQL, and MySQL. Optional drivers
+are enabled with Cargo features; see README.md for the available features.
+
+==============================================================================
+COMMANDS                                                          *:Connector*
+
+:Connector                      Toggle the Connector layout.
+:Connector open                 Open the layout.
+:Connector close                Close the layout.
+:Connector execute {query}      Execute a query on the selected connection.
+:Connector history              Pick and re-execute a saved query.
+:Connector scratchpads          Pick a scratchpad (requires fzf-lua).
+:Connector scratchgrep [query]  Search scratchpads (requires fzf-lua).
+:Connector tables               Pick a table.
+:Connector reload               Reload connection sources and the drawer.
+:Connector install              Build and install the backend with Cargo.
+:Connector store {format} {output} [path]
+                                Export the current result. Formats: csv, json,
+                                table. Outputs: file, yank, buffer.
+
+==============================================================================
+PANE ACTIONS                                              *connector-mappings*
+
+Press g? in a Connector pane to open its action menu.
+
+Drawer: <CR> selects a node or opens its actions; o expands/collapses it;
+        r refreshes; cw renames/edits; dd deletes; a adds a connection.
+Editor: <CR> runs the current statement; BB runs the whole scratchpad;
+        visual <CR> or BB runs the selection; <C-Space> runs in a float.
+Result: ? opens the result menu; H/L changes pages; E/F goes to last/first
+        page; <CR> or i edits a cell when the result is editable;
+        yaj/yac yanks JSON/CSV; yaJ/yaC yanks all rows as JSON/CSV.
+
+ vim:tw=78:ts=8:ft=help:norl:

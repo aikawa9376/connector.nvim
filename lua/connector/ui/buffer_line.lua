@@ -52,17 +52,56 @@ function M.truncate_display(text, width)
   return result .. "…"
 end
 
-function M.render(bufnr, namespace, builders)
-  local lines = {}
-  for _, builder in ipairs(builders) do
-    table.insert(lines, builder.text)
+local function same_marks(left, right)
+  if #left ~= #right then return false end
+  for i, mark in ipairs(left) do
+    local other = right[i]
+    if mark.start ~= other.start or mark.finish ~= other.finish or mark.hl_group ~= other.hl_group then
+      return false
+    end
+  end
+  return true
+end
+
+-- Owners may retain the returned state while treating builders as immutable.
+-- External buffer edits or a changed row count require a complete rebuild.
+function M.render(bufnr, namespace, builders, previous)
+  local changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local reuse = previous and previous.bufnr == bufnr and previous.namespace == namespace
+    and previous.changedtick == changedtick and #previous.builders == #builders
+  local first, last, text_changed
+  if reuse then
+    for row, builder in ipairs(builders) do
+      local old = previous.builders[row]
+      local changed = builder.text ~= old.text
+      if changed or not same_marks(builder.marks, old.marks) then
+        first = first or row
+        last = row
+        text_changed = text_changed or changed
+      end
+    end
+    if not first then return previous end
+  else
+    first, last, text_changed = 1, #builders, true
   end
 
-  vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  vim.api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
+  local lines = {}
+  if text_changed then
+    for row = first, last do
+      lines[#lines + 1] = builders[row].text
+    end
+  end
 
-  for line_nr, builder in ipairs(builders) do
+  local end_row = reuse and last or -1
+  vim.api.nvim_buf_clear_namespace(bufnr, namespace, first - 1, end_row)
+  if text_changed then
+    vim.api.nvim_buf_set_option(bufnr, "modifiable", true)
+    vim.api.nvim_buf_set_lines(bufnr, first - 1, end_row, false, lines)
+    vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
+  end
+
+  for line_nr = first, last do
+    local builder = builders[line_nr]
     for _, mark in ipairs(builder.marks) do
       vim.api.nvim_buf_set_extmark(bufnr, namespace, line_nr - 1, mark.start, {
         end_row = line_nr - 1,
@@ -73,7 +112,7 @@ function M.render(bufnr, namespace, builders)
     end
   end
 
-  vim.api.nvim_buf_set_option(bufnr, "modifiable", false)
+  return { bufnr = bufnr, namespace = namespace, changedtick = vim.api.nvim_buf_get_changedtick(bufnr), builders = builders }
 end
 
 return M

@@ -3,7 +3,12 @@ local candies_module = require("connector.ui.candies")
 
 local M = {}
 
-function M.visible_calls(handler)
+function M.visible_calls(handler, opts)
+  if opts and opts.summary then
+    local id = handler.current_connection_id
+    local calls = id and handler:get_call_summaries(id) or {}
+    return #calls > 0 and calls or handler:get_call_summaries()
+  end
   local connection = handler:get_current_connection()
   local calls = connection and handler:connection_get_calls(connection.id) or {}
   if #calls == 0 then

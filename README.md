@@ -287,6 +287,7 @@ flushed on exit; history loading does not load scratchpad buffers.
 - `f` toggle the "project only" scratchpad filter
 - `[[` / `]]` jump between top-level sections
 - expandable nodes below the top level show child counts where connector can derive them cheaply
+- table/view names in the selected connection's current DB use a subtle `Identifier` accent; tables in other DBs/connections are dimmed (`Comment`), including when drawer icons are disabled
 - when `history.display = "drawer"`, a collapsible `History` section is shown under `Scratchpads` (collapsed by default, showing up to `history.drawer_max_items`; `more…` opens the full list with fzf-lua when available)
 - `r` refresh the drawer view
 - `<C-c>` cancel the selected executing history entry

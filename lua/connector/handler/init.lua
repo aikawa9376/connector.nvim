@@ -1299,6 +1299,21 @@ function Handler:connection_select_database(id, database)
   self:emit("connections_changed", { source_id = conn.source_id })
 end
 
+-- Rendering history does not need to copy result rows or editable metadata.
+function Handler:get_call_summaries(connection_id)
+  local ctx = self:query_history_context()
+  local calls = {}
+  for _, call_id in ipairs(self.call_order) do
+    local call = self.calls[call_id]
+    if call and (not connection_id or call.connection_id == connection_id)
+      and (not ctx.project or call.project == ctx.project)
+      and (not ctx.branch or call.branch == ctx.branch) then
+      calls[#calls + 1] = { id = call.id, state = call.state, query = call.query }
+    end
+  end
+  return calls
+end
+
 function Handler:connection_get_calls(id)
   local ctx = self:query_history_context()
   local project = ctx.project
